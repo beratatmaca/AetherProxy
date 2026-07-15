@@ -175,45 +175,32 @@ async function killHost(proc) {
 // ################ BINARY-SIDE tests ################
 
 /**
- * T-01  Room code format
- * Asserts that the room code printed on stdout matches word-word-word-NNNNN.
+ * T-01/02/03  Host basics — one host serves all three checks.
+ * Room code format, HTTP + SDP offers, static assets, QR in stdout.
+ * The checks are independent reads of the same idle host.
  */
-async function testRoomCodeFormat() {
-    const { proc, roomCode } = await spawnHost();
+async function testHostBasics() {
+    const { proc, roomCode, getStdout } = await spawnHost();
     try {
+        // T-01: room code matches word-word-word-NNNNN, words ≤7 chars.
         assert.match(
             roomCode,
             ROOM_RE,
             `Room code "${roomCode}" does not match word-word-word-NNNNN`,
         );
-        // Verify each word segment is ≤7 characters (spec: ≤7-letter words).
         const [w1, w2, w3] = roomCode.split('-');
         for (const w of [w1, w2, w3]) {
             assert.ok(w.length <= 7, `Word "${w}" is longer than 7 characters`);
         }
         console.log('  [T-01] Room code format ✓', roomCode);
-    } finally {
-        await killHost(proc);
-    }
-}
 
-/**
- * T-02  HTTP server + SDP offer
- * Asserts that:
- *   - GET / returns 200 with AetherProxy in the body.
- *   - GET /offer?id=... returns a valid SDP string (v=0 … m=application).
- *   - Static assets (xterm.js, xterm.css, xterm-addon-fit.js) are served.
- */
-async function testHttpServerAndSdp() {
-    const { proc } = await spawnHost();
-    try {
-        // Index page.
+        // T-02: index page.
         const idx = await fetchText(`http://localhost:${PORT}/`);
         assert.strictEqual(idx.status, 200, 'GET / must return 200');
         assert.ok(idx.body.includes('AetherProxy'), 'Index page must contain "AetherProxy"');
         assert.ok(idx.body.includes('xterm.js'),    'Index page must load xterm.js');
 
-        // SDP offer.
+        // T-02: SDP offer.
         const offerRes = await fetchText(`http://localhost:${PORT}/offer?id=t02-client`);
         assert.strictEqual(offerRes.status, 200, 'GET /offer must return 200');
         assert.ok(
@@ -227,43 +214,26 @@ async function testHttpServerAndSdp() {
         const offerRes2 = await fetchText(`http://localhost:${PORT}/offer?id=t02-client`);
         assert.strictEqual(offerRes2.status, 200, 'Second GET /offer for same id must return 200');
 
-        // Static assets are served (non-empty bodies).
+        // T-02: static assets are served (non-empty bodies).
         for (const asset of ['/xterm.js', '/xterm.css', '/xterm-addon-fit.js']) {
             const r = await fetchText(`http://localhost:${PORT}${asset}`);
             assert.strictEqual(r.status, 200, `GET ${asset} must return 200`);
             assert.ok(r.body.length > 100, `${asset} body is suspiciously short (${r.body.length} bytes)`);
         }
-
         console.log('  [T-02] HTTP server + SDP offer ✓');
+
+        // T-03: QR render on stdout. libqrencode emits Unicode half-block
+        // characters; some builds draw modules with ESC[7m reverse video.
+        const qrShown = await waitUntil(() =>
+            /[▀-▟█]/.test(getStdout()) || getStdout().includes('\x1b[7m'), 3000);
+        assert.ok(
+            qrShown,
+            'stdout should contain QR code block characters (▄/█) or ANSI reverse-video QR pattern',
+        );
+        console.log('  [T-03] QR code in output ✓');
     } finally {
         await killHost(proc);
     }
-}
-
-/**
- * T-03  QR code in stdout
- * Asserts that the terminal output contains Unicode block characters that
- * libqrencode emits when rendering a QR code to a UTF-8 terminal.
- * The canonical markers are the top-left finder pattern squares: ▄ or █.
- */
-async function testQrCodeInOutput() {
-    const { proc, getStdout } = await spawnHost();
-    // Give the binary a moment to finish rendering the QR before reading stdout.
-    await wait(500);
-    await killHost(proc);
-
-    const out = getStdout();
-    // libqrencode renders QR codes using Unicode half-block characters.
-    // At minimum we expect several block elements.
-    const hasBlocks = /[\u2580-\u259F\u2588]/.test(out);
-    // Fallback: some builds use ANSI + spaces; in that case look for the
-    // repeating ESC[7m (reverse video) pattern that draws QR modules.
-    const hasAnsiQr = out.includes('\x1b[7m');
-    assert.ok(
-        hasBlocks || hasAnsiQr,
-        'stdout should contain QR code block characters (▄/█) or ANSI reverse-video QR pattern',
-    );
-    console.log('  [T-03] QR code in output ✓');
 }
 
 /**
@@ -388,6 +358,183 @@ async function testAsciicastRecording() {
 // ################ BROWSER-SIDE binary tests ################
 
 /**
+ * Terminal session suite — one host, one connected page, ordered checks.
+ *
+ * Merges the old T-17 landing, T-06…T-12 DOM suite, T-05 resize,
+ * T-13 bridge, T-18 identity, T-20 telemetry, and T-19 server exit.
+ * All of them exercise the same terminal-mode host over one WebRTC
+ * negotiation. Server exit stays last because it kills the host.
+ */
+async function testTerminalSession(browser, browserName) {
+    const { proc, getStdout } = await spawnHost();
+    const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
+    const page    = await context.newPage();
+
+    try {
+        // Frame capture feeds the T-05 resize checks. The saved name
+        // feeds the T-18 identity check. Both must precede goto.
+        await page.addInitScript(() => {
+            window._aether_sentFrames = [];
+            window._aether_dcOpen     = false;
+            try { localStorage.setItem('aether-name', 'tester-name'); } catch (e) {}
+
+            const origRTCPC = window.RTCPeerConnection;
+            window.RTCPeerConnection = function (...args) {
+                const pc = new origRTCPC(...args);
+                pc.addEventListener('datachannel', ev => {
+                    const dc = ev.channel;
+                    const origSend = dc.send.bind(dc);
+                    dc.send = function (data) {
+                        window._aether_sentFrames.push(
+                            typeof data === 'string' ? data : '[binary]'
+                        );
+                        return origSend(data);
+                    };
+                    dc.addEventListener('open', () => {
+                        window._aether_dcOpen = true;
+                    });
+                });
+                return pc;
+            };
+        });
+
+        // T-17: landing page shows without a room fragment, then joins.
+        await page.goto(`http://localhost:${PORT}/`);
+        assert.ok(await page.isVisible('#landing'), 'Landing must show without a room fragment');
+        assert.ok(await page.isVisible('#room-input'), 'Landing must offer a room input');
+        await page.fill('#room-input', 'fox-river-stone-48291');
+        await page.click('#room-go');
+        await page.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Connected',
+            { timeout: 15_000 },
+        );
+        assert.ok(await page.isHidden('#landing'), 'Landing must hide after entering a room');
+        console.log(`  [T-17] Landing page (${browserName}) ✓`);
+
+        // T-06: page title.
+        const title = await page.title();
+        assert.ok(title.includes('AetherProxy'), `Title: "${title}"`);
+        console.log('  [T-06] Page title ✓');
+
+        // T-07: xterm terminal mounts (xterm 5.x uses the DOM renderer by default).
+        const screen = await page.$('.xterm .xterm-screen');
+        assert.ok(screen !== null, 'xterm screen element must be in DOM');
+        console.log('  [T-07] xterm mounts ✓');
+
+        // T-08: toolbar buttons present.
+        for (const id of ['btn-ctrl','btn-alt','btn-tab','btn-esc',
+                           'btn-up','btn-down','btn-left','btn-right']) {
+            assert.ok(await page.$(`#${id}`) !== null, `#${id} must be in DOM`);
+        }
+        console.log('  [T-08] Toolbar buttons ✓');
+
+        // T-09: mode badge hidden by default (terminal mode).
+        const badgeDisplay = await page.$eval('#mode-badge',
+            el => getComputedStyle(el).display);
+        assert.strictEqual(badgeDisplay, 'none', 'Mode badge must be hidden in terminal mode');
+        console.log('  [T-09] Mode badge hidden ✓');
+
+        // T-10: Ctrl modifier toggle (not a no-op).
+        await page.click('#btn-ctrl');
+        assert.ok(await page.$('#btn-ctrl.modifier-active') !== null,
+            '#btn-ctrl must gain modifier-active class on click');
+        await page.click('#btn-ctrl');
+        assert.strictEqual(await page.$('#btn-ctrl.modifier-active'), null,
+            '#btn-ctrl must lose modifier-active class on second click');
+        console.log('  [T-10] Ctrl modifier toggle ✓');
+
+        // T-11: terminal is interactive in terminal mode (no pipe-locked class).
+        const isLocked = await page.$eval('#terminal-container',
+            el => el.classList.contains('pipe-locked'));
+        assert.strictEqual(isLocked, false, 'Terminal must not be locked in terminal mode');
+        console.log('  [T-11] Keyboard not locked in terminal mode ✓');
+
+        // T-12: window.isPipeMode is false in terminal mode.
+        const pipeMode = await page.evaluate(() => window.isPipeMode ?? false);
+        assert.strictEqual(pipeMode, false, 'window.isPipeMode must be false in terminal mode');
+        console.log('  [T-12] window.isPipeMode === false ✓');
+
+        // T-05: resize frame on open, then one per viewport resize.
+        await page.waitForFunction(() => window._aether_dcOpen === true, { timeout: 15_000 });
+        const framesAtOpen = await page.evaluate(() => window._aether_sentFrames.length);
+        await page.setViewportSize({ width: 900, height: 600 });
+        await wait(500); // allow fitAddon.fit() + sendResizeFrame() to fire
+
+        const frames = await page.evaluate(() => window._aether_sentFrames);
+        const resizeFrames = frames.slice(framesAtOpen).filter(f =>
+            typeof f === 'string' &&
+            f.startsWith('\x00AETHER:') &&
+            f.includes('"type":"resize"')
+        );
+        assert.ok(
+            resizeFrames.length > 0,
+            `Expected at least one resize control frame after viewport resize, got 0.\nAll frames: ${JSON.stringify(frames.slice(framesAtOpen))}`,
+        );
+        const last = JSON.parse(resizeFrames[resizeFrames.length - 1].substring(8));
+        assert.ok(last.cols > 0 && last.cols < 1000, `cols=${last.cols} out of range`);
+        assert.ok(last.rows > 0 && last.rows < 500,  `rows=${last.rows} out of range`);
+        const openFrames = frames.slice(0, framesAtOpen).filter(f =>
+            typeof f === 'string' &&
+            f.startsWith('\x00AETHER:') &&
+            f.includes('"type":"resize"')
+        );
+        assert.ok(
+            openFrames.length > 0,
+            'Expected a resize frame sent immediately on DataChannel open',
+        );
+        console.log(`  [T-05] Terminal resize ✓ — cols=${last.cols} rows=${last.rows}`);
+
+        // T-13: local terminal bridge, both directions.
+        proc.stdin.write('echo local_bridge_$((20+3))\r');
+        const localOk = await waitUntil(() => getStdout().includes('local_bridge_23'));
+        assert.ok(localOk, 'Local keystrokes must reach the shared shell and echo locally');
+
+        await page.click('#terminal-container');
+        await page.evaluate(() => document.querySelector('.xterm-helper-textarea')?.focus());
+        await wait(300);
+        await page.keyboard.type('echo browser_bridge_$((40+2))');
+        await page.keyboard.press('Enter');
+        const remoteOk = await waitUntil(() => getStdout().includes('browser_bridge_42'));
+        assert.ok(remoteOk, 'Browser keystrokes must echo on the host terminal');
+        console.log('  [T-13] Local terminal bridge ✓');
+
+        // T-18: the saved name rides /offer and returns in presence frames.
+        await page.waitForFunction(
+            () => document.getElementById('peers-bar').textContent.includes('tester-name'),
+            { timeout: 10_000 },
+        );
+        console.log('  [T-18] Client identity in presence ✓');
+
+        // T-20: the 2000ms getStats() poll reveals the telemetry overlay.
+        await page.waitForFunction(
+            () => {
+                const el = document.getElementById('telemetry');
+                return el && el.classList.contains('visible') && el.textContent.length > 0;
+            },
+            { timeout: 10_000 },
+        );
+        const telemetry = await page.$eval('#telemetry', el => el.textContent);
+        console.log(`  [T-20] Telemetry overlay ✓ — "${telemetry}"`);
+
+        // T-19: SIGTERM broadcasts server_exit. Signal only this test's
+        // binary (script's direct child), not the wrapper and not
+        // unrelated aetherproxy processes on the machine.
+        execFileSync('pkill', ['-TERM', '-x', '-P', String(proc.pid), 'aetherproxy']);
+        await page.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Server terminated',
+            { timeout: 10_000 },
+        );
+        const exitLocked = await page.$eval('#terminal-container',
+            el => el.classList.contains('pipe-locked'));
+        assert.ok(exitLocked, 'Input must lock after server_exit');
+        console.log(`  [T-19] Server exit broadcast (${browserName}) ✓`);
+    } finally {
+        await context.close();
+        await killHost(proc);
+    }
+}
+
+/**
  * T-04  Pipe mode — browser receives all bytes, UI is locked.
  *
  * We pipe exactly PIPE_BYTES of pseudo-random data to the binary's stdin.
@@ -398,7 +545,7 @@ async function testAsciicastRecording() {
  *   c) #terminal-container has class "pipe-locked"
  *   d) window.isPipeMode === true
  */
-async function testPipeMode(browserType, browserName) {
+async function testPipeMode(browser, browserName) {
     const PIPE_BYTES = 1000;
     const payload    = Buffer.alloc(PIPE_BYTES, 0x41); // 1000 × 'A'
 
@@ -407,8 +554,8 @@ async function testPipeMode(browserType, browserName) {
     // Give the binary time to start the HTTP server even though stdin is pipe.
     await wait(800);
 
-    const browser = await browserType.launch({ headless: true });
-    const page    = await browser.newPage();
+    const context = await browser.newContext();
+    const page    = await context.newPage();
 
     try {
         // Intercept DataChannel messages before page scripts run.
@@ -470,137 +617,7 @@ async function testPipeMode(browserType, browserName) {
 
         console.log(`  [T-04] Pipe mode (${browserName}) ✓ — received ${received} bytes`);
     } finally {
-        await browser.close();
-        await killHost(proc);
-    }
-}
-
-/**
- * T-05  Terminal resize — browser sends resize frame to host.
- *
- * We intercept RTCDataChannel.prototype.send via addInitScript to capture
- * all frames the browser transmits. After the data channel opens we resize
- * the browser viewport. We then assert a \x00AETHER:{"type":"resize",...}
- * frame was sent containing cols/rows that match the new viewport dimensions.
- */
-async function testTerminalResize(browserType, browserName) {
-    const { proc } = await spawnHost();
-    const browser  = await browserType.launch({ headless: true });
-
-    // Start with a known viewport.
-    const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
-
-    try {
-        // Intercept DataChannel.send before page scripts run.
-        await page.addInitScript(() => {
-            window._aether_sentFrames = [];
-            window._aether_dcOpen     = false;
-
-            const origRTCPC = window.RTCPeerConnection;
-            window.RTCPeerConnection = function (...args) {
-                const pc = new origRTCPC(...args);
-                pc.addEventListener('datachannel', ev => {
-                    const dc = ev.channel;
-                    const origSend = dc.send.bind(dc);
-                    dc.send = function (data) {
-                        window._aether_sentFrames.push(
-                            typeof data === 'string' ? data : '[binary]'
-                        );
-                        return origSend(data);
-                    };
-                    dc.addEventListener('open', () => {
-                        window._aether_dcOpen = true;
-                    });
-                });
-                return pc;
-            };
-        });
-
-        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
-
-        // Wait for the data channel to open (up to 15 s).
-        await page.waitForFunction(() => window._aether_dcOpen === true, { timeout: 15_000 });
-
-        // Record frame count at open time.
-        const framesAtOpen = await page.evaluate(() => window._aether_sentFrames.length);
-
-        // Resize to a different viewport.
-        await page.setViewportSize({ width: 900, height: 600 });
-        await wait(500); // allow fitAddon.fit() + sendResizeFrame() to fire
-
-        // Collect sent frames after the resize.
-        const frames = await page.evaluate(() => window._aether_sentFrames);
-        const resizeFrames = frames.slice(framesAtOpen).filter(f =>
-            typeof f === 'string' &&
-            f.startsWith('\x00AETHER:') &&
-            f.includes('"type":"resize"')
-        );
-
-        assert.ok(
-            resizeFrames.length > 0,
-            `Expected at least one resize control frame after viewport resize, got 0.\nAll frames: ${JSON.stringify(frames.slice(framesAtOpen))}`,
-        );
-
-        // Parse the last resize frame and verify cols/rows are plausible.
-        const last = JSON.parse(resizeFrames[resizeFrames.length - 1].substring(8));
-        assert.ok(last.cols > 0 && last.cols < 1000, `cols=${last.cols} out of range`);
-        assert.ok(last.rows > 0 && last.rows < 500,  `rows=${last.rows} out of range`);
-
-        // After the initial open, we should also have received a resize frame
-        // (sendResizeFrame is called on dc.onopen).
-        const openFrames = frames.slice(0, framesAtOpen).filter(f =>
-            typeof f === 'string' &&
-            f.startsWith('\x00AETHER:') &&
-            f.includes('"type":"resize"')
-        );
-        assert.ok(
-            openFrames.length > 0,
-            'Expected a resize frame sent immediately on DataChannel open',
-        );
-
-        console.log(`  [T-05] Terminal resize (${browserName}) ✓ — cols=${last.cols} rows=${last.rows}`);
-    } finally {
-        await browser.close();
-        await killHost(proc);
-    }
-}
-
-/**
- * T-13  Local terminal bridge.
- *
- * The host terminal must stay interactive while shared:
- *   a) A command typed into the host PTY produces local output.
- *   b) A command typed in the browser terminal echoes on the host PTY.
- */
-async function testLocalBridge(browserType, browserName) {
-    const { proc, getStdout } = await spawnHost();
-    const browser = await browserType.launch({ headless: true });
-    const page    = await browser.newPage();
-
-    try {
-        // a) Local input reaches the shared shell and echoes locally.
-        await wait(1000); // allow the inner shell to print its prompt
-        proc.stdin.write('echo local_bridge_$((20+3))\r');
-        const localOk = await waitUntil(() => getStdout().includes('local_bridge_23'));
-        assert.ok(localOk, 'Local keystrokes must reach the shared shell and echo locally');
-
-        // b) Browser input echoes on the host terminal.
-        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
-        await page.waitForFunction(
-            () => document.getElementById('status-text').textContent === 'Connected',
-            { timeout: 15_000 },
-        );
-        await page.click('#terminal-container');
-        await page.evaluate(() => document.querySelector('.xterm-helper-textarea')?.focus());
-        await wait(300);
-        await page.keyboard.type('echo browser_bridge_$((40+2))');
-        await page.keyboard.press('Enter');
-        const remoteOk = await waitUntil(() => getStdout().includes('browser_bridge_42'));
-        assert.ok(remoteOk, 'Browser keystrokes must echo on the host terminal');
-
-        console.log(`  [T-13] Local terminal bridge (${browserName}) ✓`);
-    } finally {
-        await browser.close();
+        await context.close();
         await killHost(proc);
     }
 }
@@ -614,7 +631,7 @@ async function testLocalBridge(browserType, browserName) {
  * host through a local signaling relay. The host must survive the
  * client leaving.
  */
-async function testInteractiveLifecycle(browserType, browserName) {
+async function testInteractiveLifecycle(browser, browserName) {
     const SIG_PORT = PORT + 4;
 
     // Non-offline HOME wired to the local signaling relay.
@@ -640,7 +657,7 @@ async function testInteractiveLifecycle(browserType, browserName) {
 
     let host = null;
     let inter = null;
-    let browser = null;
+    let context = null;
     try {
         assert.ok(
             await waitUntil(() => sigOut.includes('running on port')),
@@ -670,8 +687,8 @@ async function testInteractiveLifecycle(browserType, browserName) {
         const url = interOut.match(urlRe)[1];
         assert.ok(!interOut.includes('Room:'), 'Interactive must not create its own room');
 
-        browser = await browserType.launch({ headless: true });
-        const page = await browser.newPage();
+        context = await browser.newContext();
+        const page = await context.newPage();
         await page.goto(url);
         await page.waitForFunction(
             () => document.getElementById('status-text').textContent === 'Connected',
@@ -699,8 +716,8 @@ async function testInteractiveLifecycle(browserType, browserName) {
 
         // Closing the tab ends the launcher, not the host.
         await page.goto('about:blank');
-        await browser.close();
-        browser = null;
+        await context.close();
+        context = null;
         assert.ok(
             await waitUntil(() => interExited, 20_000),
             'Interactive must exit after the tab closes',
@@ -712,138 +729,10 @@ async function testInteractiveLifecycle(browserType, browserName) {
 
         console.log(`  [T-16] Interactive client lifecycle (${browserName}) ✓`);
     } finally {
-        if (browser) await browser.close();
+        if (context) await context.close();
         if (inter) await killHost(inter);
         if (host) await killHost(host.proc);
         sig.kill('SIGKILL');
-    }
-}
-
-/**
- * T-17  Landing page.
- *
- * Without a #room fragment the client shows a landing page with a room
- * input. Entering a code reveals the terminal and connects.
- */
-async function testLandingPage(browserType, browserName) {
-    const { proc } = await spawnHost();
-    const browser = await browserType.launch({ headless: true });
-    const page = await browser.newPage();
-    try {
-        await page.goto(`http://localhost:${PORT}/`);
-        assert.ok(await page.isVisible('#landing'), 'Landing must show without a room fragment');
-        assert.ok(await page.isVisible('#room-input'), 'Landing must offer a room input');
-
-        await page.fill('#room-input', 'fox-river-stone-48291');
-        await page.click('#room-go');
-        await page.waitForFunction(
-            () => document.getElementById('status-text').textContent === 'Connected',
-            { timeout: 15_000 },
-        );
-        assert.ok(await page.isHidden('#landing'), 'Landing must hide after entering a room');
-
-        console.log(`  [T-17] Landing page (${browserName}) ✓`);
-    } finally {
-        await browser.close();
-        await killHost(proc);
-    }
-}
-
-/**
- * T-18  Client identity in presence.
- *
- * A saved name rides the /offer query string. The host maps it in the
- * SessionRegistry and echoes it back in presence frames. The peer pill
- * in the header must render the name.
- */
-async function testClientIdentity(browserType, browserName) {
-    const { proc } = await spawnHost();
-    const browser = await browserType.launch({ headless: true });
-    const page = await browser.newPage();
-    try {
-        await page.addInitScript(() => {
-            try { localStorage.setItem('aether-name', 'tester-name'); } catch (e) {}
-        });
-        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
-        await page.waitForFunction(
-            () => document.getElementById('status-text').textContent === 'Connected',
-            { timeout: 15_000 },
-        );
-        await page.waitForFunction(
-            () => document.getElementById('peers-bar').textContent.includes('tester-name'),
-            { timeout: 10_000 },
-        );
-        console.log(`  [T-18] Client identity in presence (${browserName}) ✓`);
-    } finally {
-        await browser.close();
-        await killHost(proc);
-    }
-}
-
-/**
- * T-19  Server exit broadcast.
- *
- * SIGTERM on the host must broadcast a server_exit frame. The web client
- * locks input, renders the termination notice, and shows "Server terminated".
- */
-async function testServerExitBroadcast(browserType, browserName) {
-    const { proc } = await spawnHost();
-    const browser = await browserType.launch({ headless: true });
-    const page = await browser.newPage();
-    try {
-        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
-        await page.waitForFunction(
-            () => document.getElementById('status-text').textContent === 'Connected',
-            { timeout: 15_000 },
-        );
-
-        // Signal only this test's binary (script's direct child), not the
-        // wrapper and not unrelated aetherproxy processes on the machine.
-        execFileSync('pkill', ['-TERM', '-x', '-P', String(proc.pid), 'aetherproxy']);
-
-        await page.waitForFunction(
-            () => document.getElementById('status-text').textContent === 'Server terminated',
-            { timeout: 10_000 },
-        );
-        const locked = await page.$eval('#terminal-container',
-            el => el.classList.contains('pipe-locked'));
-        assert.ok(locked, 'Input must lock after server_exit');
-
-        console.log(`  [T-19] Server exit broadcast (${browserName}) ✓`);
-    } finally {
-        await browser.close();
-        await killHost(proc);
-    }
-}
-
-/**
- * T-20  Telemetry overlay.
- *
- * After connecting, the 2000ms getStats() poll must reveal the overlay
- * div with a connection state (and RTT when the browser reports one).
- */
-async function testTelemetryOverlay(browserType, browserName) {
-    const { proc } = await spawnHost();
-    const browser = await browserType.launch({ headless: true });
-    const page = await browser.newPage();
-    try {
-        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
-        await page.waitForFunction(
-            () => document.getElementById('status-text').textContent === 'Connected',
-            { timeout: 15_000 },
-        );
-        await page.waitForFunction(
-            () => {
-                const el = document.getElementById('telemetry');
-                return el && el.classList.contains('visible') && el.textContent.length > 0;
-            },
-            { timeout: 10_000 },
-        );
-        const text = await page.$eval('#telemetry', el => el.textContent);
-        console.log(`  [T-20] Telemetry overlay (${browserName}) ✓ — "${text}"`);
-    } finally {
-        await browser.close();
-        await killHost(proc);
     }
 }
 
@@ -855,9 +744,8 @@ async function testTelemetryOverlay(browserType, browserName) {
  * frame and the second client renders the lock badge with the writer's
  * name. After the window the second client takes over.
  */
-async function testInputDebounce(browserType, browserName) {
+async function testInputDebounce(browser, browserName) {
     const { proc, getStdout } = await spawnHost();
-    const browser = await browserType.launch({ headless: true });
     const ctxA = await browser.newContext();
     const ctxB = await browser.newContext();
     const pageA = await ctxA.newPage();
@@ -906,7 +794,8 @@ async function testInputDebounce(browserType, browserName) {
 
         console.log(`  [T-21] Input debounce + lock indicator (${browserName}) ✓`);
     } finally {
-        await browser.close();
+        await ctxA.close();
+        await ctxB.close();
         await killHost(proc);
     }
 }
@@ -919,7 +808,7 @@ async function testInputDebounce(browserType, browserName) {
  * "Waiting for approval". 'y' promotes it to collaborator. A second
  * client answered with 'n' is kicked with an error frame.
  */
-async function testAdmissionGate(browserType, browserName) {
+async function testAdmissionGate(browser, browserName) {
     await waitForPortFree(PORT);
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aether-home-t22-'));
     const env  = { ...process.env, HOME: home };
@@ -928,9 +817,9 @@ async function testAdmissionGate(browserType, browserName) {
     execFileSync(BINARY, ['config', 'set', 'admit', 'true'], { env });
 
     const { proc, getStdout } = await spawnHost([], null, 12_000, { HOME: home });
-    const browser = await browserType.launch({ headless: true });
     const ctxA = await browser.newContext();
     const pageA = await ctxA.newPage();
+    let ctxB = null;
     try {
         await pageA.addInitScript(() => {
             try { localStorage.setItem('aether-name', 'alice'); } catch (e) {}
@@ -972,7 +861,7 @@ async function testAdmissionGate(browserType, browserName) {
         );
 
         // A second client gets rejected and kicked.
-        const ctxB = await browser.newContext();
+        ctxB = await browser.newContext();
         const pageB = await ctxB.newPage();
         await pageB.addInitScript(() => {
             try { localStorage.setItem('aether-name', 'mallory'); } catch (e) {}
@@ -993,7 +882,8 @@ async function testAdmissionGate(browserType, browserName) {
 
         console.log(`  [T-22] Admission gate (${browserName}) ✓`);
     } finally {
-        await browser.close();
+        await ctxA.close();
+        if (ctxB) await ctxB.close();
         await killHost(proc);
     }
 }
@@ -1001,85 +891,21 @@ async function testAdmissionGate(browserType, browserName) {
 // ################ test registry and runner ################
 
 const BINARY_TESTS = [
-    { name: 'T-01  Room code format',       fn: testRoomCodeFormat   },
-    { name: 'T-02  HTTP server + SDP offer', fn: testHttpServerAndSdp },
-    { name: 'T-03  QR code in output',       fn: testQrCodeInOutput   },
-    { name: 'T-14  Config subcommand',       fn: testConfigCommand    },
-    { name: 'T-15  Offline mode',            fn: testOfflineMode      },
-    { name: 'T-23  Asciicast recording',     fn: testAsciicastRecording },
+    { name: 'T-01/02/03  Host basics',   fn: testHostBasics       },
+    { name: 'T-14  Config subcommand',   fn: testConfigCommand    },
+    { name: 'T-15  Offline mode',        fn: testOfflineMode      },
+    { name: 'T-23  Asciicast recording', fn: testAsciicastRecording },
 ];
 
+// Each test gets a fresh context from a shared browser instance.
+// Launching the browser once per engine saves ~1s per test.
 const BROWSER_TESTS = [
-    { name: 'T-04  Pipe mode',        fn: testPipeMode      },
-    { name: 'T-05  Terminal resize',  fn: testTerminalResize },
-    { name: 'T-13  Local terminal bridge', fn: testLocalBridge },
-    { name: 'T-16  Interactive client lifecycle', fn: testInteractiveLifecycle },
-    { name: 'T-17  Landing page',          fn: testLandingPage },
-    { name: 'T-18  Client identity',       fn: testClientIdentity },
-    { name: 'T-19  Server exit broadcast', fn: testServerExitBroadcast },
-    { name: 'T-20  Telemetry overlay',     fn: testTelemetryOverlay },
-    { name: 'T-21  Input debounce',        fn: testInputDebounce },
-    { name: 'T-22  Admission gate',        fn: testAdmissionGate },
+    { name: 'Terminal session suite',              fn: testTerminalSession },
+    { name: 'T-04  Pipe mode',                     fn: testPipeMode },
+    { name: 'T-16  Interactive client lifecycle',  fn: testInteractiveLifecycle },
+    { name: 'T-21  Input debounce',                fn: testInputDebounce },
+    { name: 'T-22  Admission gate',                fn: testAdmissionGate },
 ];
-
-// DOM-only tests from the previous session (no real WebRTC needed).
-async function runDomTests(browserType, browserName) {
-    const { proc } = await spawnHost();
-    const browser  = await browserType.launch({ headless: true });
-    const page     = await browser.newPage();
-
-    try {
-        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
-        await wait(1500);
-
-        // T-06  Page title.
-        const title = await page.title();
-        assert.ok(title.includes('AetherProxy'), `Title: "${title}"`);
-        console.log('  [T-06] Page title ✓');
-
-        // T-07  xterm terminal mounts (xterm 5.x uses the DOM renderer by default).
-        const screen = await page.$('.xterm .xterm-screen');
-        assert.ok(screen !== null, 'xterm screen element must be in DOM');
-        console.log('  [T-07] xterm mounts ✓');
-
-        // T-08  Toolbar buttons present.
-        for (const id of ['btn-ctrl','btn-alt','btn-tab','btn-esc',
-                           'btn-up','btn-down','btn-left','btn-right']) {
-            assert.ok(await page.$(`#${id}`) !== null, `#${id} must be in DOM`);
-        }
-        console.log('  [T-08] Toolbar buttons ✓');
-
-        // T-09  Mode badge hidden by default (terminal mode).
-        const badgeDisplay = await page.$eval('#mode-badge',
-            el => getComputedStyle(el).display);
-        assert.strictEqual(badgeDisplay, 'none', 'Mode badge must be hidden in terminal mode');
-        console.log('  [T-09] Mode badge hidden ✓');
-
-        // T-10  Ctrl modifier toggle (not a no-op).
-        await page.click('#btn-ctrl');
-        assert.ok(await page.$('#btn-ctrl.modifier-active') !== null,
-            '#btn-ctrl must gain modifier-active class on click');
-        await page.click('#btn-ctrl');
-        assert.strictEqual(await page.$('#btn-ctrl.modifier-active'), null,
-            '#btn-ctrl must lose modifier-active class on second click');
-        console.log('  [T-10] Ctrl modifier toggle ✓');
-
-        // T-11  Terminal is interactive in terminal mode (no pipe-locked class).
-        const isLocked = await page.$eval('#terminal-container',
-            el => el.classList.contains('pipe-locked'));
-        assert.strictEqual(isLocked, false, 'Terminal must not be locked in terminal mode');
-        console.log('  [T-11] Keyboard not locked in terminal mode ✓');
-
-        // T-12  window.isPipeMode is false in terminal mode.
-        const pipeMode = await page.evaluate(() => window.isPipeMode ?? false);
-        assert.strictEqual(pipeMode, false, 'window.isPipeMode must be false in terminal mode');
-        console.log('  [T-12] window.isPipeMode === false ✓');
-
-    } finally {
-        await browser.close();
-        await killHost(proc);
-    }
-}
 
 // ################ main ################
 
@@ -1111,27 +937,21 @@ async function runDomTests(browserType, browserName) {
         console.log(`║  Browser tests — ${browserName.padEnd(18)} ║`);
         console.log(`╚══════════════════════════════════════╝`);
 
-        // DOM-only suite.
-        process.stdout.write(`\n  Running: DOM suite (${browserName}) … \n`);
+        const browser = await browserType.launch({ headless: true });
         try {
-            await runDomTests(browserType, browserName);
-            results.push({ name: `DOM suite (${browserName})`, ok: true });
-        } catch (e) {
-            console.error(`  ✗ DOM suite failed: ${e.message}`);
-            results.push({ name: `DOM suite (${browserName})`, ok: false, err: e.message });
-        }
-
-        // Browser tests that require actual WebRTC negotiation.
-        for (const t of BROWSER_TESTS) {
-            const label = `${t.name} (${browserName})`;
-            process.stdout.write(`\n  Running: ${label} … \n`);
-            try {
-                await t.fn(browserType, browserName);
-                results.push({ name: label, ok: true });
-            } catch (e) {
-                console.error(`  ✗ ${e.message}`);
-                results.push({ name: label, ok: false, err: e.message });
+            for (const t of BROWSER_TESTS) {
+                const label = `${t.name} (${browserName})`;
+                process.stdout.write(`\n  Running: ${label} … \n`);
+                try {
+                    await t.fn(browser, browserName);
+                    results.push({ name: label, ok: true });
+                } catch (e) {
+                    console.error(`  ✗ ${e.message}`);
+                    results.push({ name: label, ok: false, err: e.message });
+                }
             }
+        } finally {
+            await browser.close();
         }
     }
 
