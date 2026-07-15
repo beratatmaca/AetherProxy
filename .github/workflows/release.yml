@@ -6,10 +6,10 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write   # needed to create GitHub Releases and upload assets
+  contents: write
 
 jobs:
-  # ── Build static binaries for both architectures ──────────────────────────────
+  # ################ Fully static musl binaries ################
   build:
     name: Static build — ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
@@ -21,48 +21,27 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-24.04
-            cmake_preset: gcc-release
-            triple: x86_64-linux-gnu
           - arch: arm64
             runner: ubuntu-24.04-arm
-            cmake_preset: gcc-release
-            triple: aarch64-linux-gnu
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Build fully static musl binary in Alpine
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build \
-            libssl-dev libsrtp2-dev \
-            libqrencode-dev \
-            python3 \
-            dpkg-dev
-
-      - name: Cache CMake FetchContent downloads
-        uses: actions/cache@v4
-        with:
-          path: ~/.cmake
-          key: fetchcontent-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-${{ runner.os }}-${{ matrix.arch }}-
-
-      - name: Embed web assets
-        run: bash tools/embed-assets.sh
-
-      - name: Configure (Release + static)
-        run: |
-          cmake --preset ${{ matrix.cmake_preset }} -G Ninja \
-            -DSTATIC_BUILD=ON \
-            -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        run: cmake --build --preset ${{ matrix.cmake_preset }} --parallel "$(nproc)"
+          docker run --rm -v "$PWD:/work" -w /work alpine:3.21 sh -euc '
+            apk add --no-cache build-base cmake bash xxd git ca-certificates \
+              linux-headers python3 openssl-dev openssl-libs-static file
+            bash tools/embed-assets.sh
+            cmake -B build-release -DCMAKE_BUILD_TYPE=Release -DSTATIC_BUILD=ON
+            cmake --build build-release --parallel "$(nproc)"
+            file build-release/aetherproxy | grep -q "statically linked"
+            ./build-release/aetherproxy --version
+          '
 
       - name: Rename binary for release
         run: |
-          cp build-gcc-release/aetherproxy aetherproxy-linux-${{ matrix.arch }}
+          cp build-release/aetherproxy aetherproxy-linux-${{ matrix.arch }}
           chmod +x aetherproxy-linux-${{ matrix.arch }}
 
       - name: Package .deb
@@ -80,7 +59,7 @@ jobs:
             dist/*.deb
           retention-days: 1
 
-  # ── Draft GitHub Release with all assets ─────────────────────────────────────
+  # ################ Draft GitHub Release with all assets ################
   release:
     name: Draft GitHub Release
     needs: build

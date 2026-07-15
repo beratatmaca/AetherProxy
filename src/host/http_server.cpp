@@ -48,6 +48,7 @@ void HttpServer::start(uint16_t port, const std::function<std::string(std::strin
     addr.sin_port = htons(port);
 
     if (bind(serverFd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        std::cerr << "Port " << port << " is busy. Server not started.\n" << std::flush;
         close(serverFd);
         serverFd = -1;
         return;
@@ -59,6 +60,7 @@ void HttpServer::start(uint16_t port, const std::function<std::string(std::strin
         return;
     }
 
+    std::cout << "Server listening on port " << port << "\n" << std::flush;
     running = true;
     while (running) {
         int clientFd = accept(serverFd, nullptr, nullptr);

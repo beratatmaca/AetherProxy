@@ -5,10 +5,15 @@
 #include <iostream>
 #include <cstdlib>
 #include <cctype>
+#include <map>
+#include <filesystem>
+#include <algorithm>
 
 #ifndef AETHER_VERSION
 #define AETHER_VERSION "dev"
 #endif
+
+static const char *DEFAULT_SIGNALING_URL = "wss://signal.aetherproxy.dev";
 
 static std::string extractQuoted(std::string_view text, size_t &pos) {
     size_t open = text.find('"', pos);
@@ -56,6 +61,52 @@ static std::string_view sectionText(std::string_view content, std::string_view h
     return content.substr(start, end - start);
 }
 
+static std::string tokenAfter(std::string_view text, size_t pos) {
+    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t')) {
+        ++pos;
+    }
+    size_t end = pos;
+    while (end < text.size() && text[end] != ' ' && text[end] != '\t' && text[end] != '\n' && text[end] != '\r') {
+        ++end;
+    }
+    return std::string(text.substr(pos, end - pos));
+}
+
+static std::string configFilePath() {
+    const char *xdg = std::getenv("XDG_CONFIG_HOME");
+    if (xdg != nullptr && xdg[0] != '\0') {
+        return std::string(xdg) + "/aetherproxy/config.toml";
+    }
+    const char *home = std::getenv("HOME");
+    if (home == nullptr) {
+        return "";
+    }
+    return std::string(home) + "/.config/aetherproxy/config.toml";
+}
+
+static bool writeFileConfig(const std::map<std::string, std::string> &values);
+
+static void ensureConfigFile() {
+    std::string path = configFilePath();
+    if (path.empty() || std::filesystem::exists(path)) {
+        return;
+    }
+    const std::map<std::string, std::string> defaults = {
+        {"port", "8080"},
+        {"max-clients", "10"},
+        {"idle-timeout", "3600"},
+        {"stun", "stun:stun.l.google.com:19302"},
+        {"turn", "turn:openrelay.metered.ca:80"},
+        {"turn-user", "openrelayproject"},
+        {"turn-pass", "openrelayproject"},
+        {"no-stun", "false"},
+        {"no-turn", "false"},
+        {"offline", "false"},
+        {"signal", DEFAULT_SIGNALING_URL},
+    };
+    writeFileConfig(defaults);
+}
+
 static long parseNumberAt(std::string_view text, size_t pos) {
     while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t')) {
         ++pos;
@@ -71,11 +122,8 @@ static long parseNumberAt(std::string_view text, size_t pos) {
 }
 
 static void loadConfigFile(CLIConfig &config) {
-    const char *home = std::getenv("HOME");
-    if (home == nullptr) {
-        return;
-    }
-    std::ifstream file(std::string(home) + "/.config/aetherproxy/config.toml");
+    ensureConfigFile();
+    std::ifstream file(configFilePath());
     if (!file) {
         return;
     }
@@ -128,6 +176,14 @@ static void loadConfigFile(CLIConfig &config) {
             }
         }
     }
+    size_t flagPos = findKey(ice, "no_stun");
+    if (flagPos != std::string_view::npos) {
+        config.noStun = tokenAfter(ice, flagPos) == "true";
+    }
+    flagPos = findKey(ice, "no_turn");
+    if (flagPos != std::string_view::npos) {
+        config.noTurn = tokenAfter(ice, flagPos) == "true";
+    }
 
     std::string_view session = sectionText(content, "[session]");
     size_t keyPos = findKey(session, "idle_timeout");
@@ -151,44 +207,44 @@ static void loadConfigFile(CLIConfig &config) {
             config.port = static_cast<uint16_t>(v);
         }
     }
+    keyPos = findKey(session, "signal");
+    if (keyPos != std::string_view::npos) {
+        size_t p = keyPos;
+        std::string v = extractQuoted(session, p);
+        if (!v.empty()) {
+            config.signalingUrl = v;
+        }
+    }
+    keyPos = findKey(session, "offline");
+    if (keyPos != std::string_view::npos) {
+        config.offline = tokenAfter(session, keyPos) == "true";
+    }
 }
 
 CLIConfig parseCLIArgs(int argc, char *argv[]) {
     CLIConfig config;
     loadConfigFile(config);
 
-    std::vector<std::string> cliStun;
-    std::vector<std::string> cliTurn;
     for (int i = 1; i < argc; ++i) {
         std::string_view arg(argv[i]);
-        if (arg == "--stun" && i + 1 < argc) {
-            cliStun.emplace_back(argv[++i]);
-        } else if (arg == "--turn" && i + 1 < argc) {
-            cliTurn.emplace_back(argv[++i]);
-        } else if (arg == "--turn-user" && i + 1 < argc) {
-            config.turnUser = argv[++i];
-        } else if (arg == "--turn-pass" && i + 1 < argc) {
-            config.turnPass = argv[++i];
-        } else if (arg == "--max-clients" && i + 1 < argc) {
-            config.maxClients = std::stoi(argv[++i]);
-        } else if (arg == "--no-turn") {
-            config.noTurn = true;
-        } else if (arg == "--no-stun") {
-            config.noStun = true;
-        } else if (arg == "--port" && i + 1 < argc) {
-            config.port = static_cast<uint16_t>(std::stoi(argv[++i]));
-        } else if (arg == "--signal" && i + 1 < argc) {
-            config.signalingUrl = argv[++i];
-        } else if (arg == "--idle-timeout" && i + 1 < argc) {
-            config.idleTimeout = std::stoi(argv[++i]);
+        if (arg == "--") {
+            break;
+        }
+        if (arg == "--offline") {
+            config.offline = true;
+        } else if (arg.starts_with("--")) {
+            std::cerr << "Unknown flag: " << arg << "\n"
+                      << "Settings live in: aetherproxy config\n";
+            std::exit(1);
         }
     }
 
-    if (!cliStun.empty()) {
-        config.stunServers = std::move(cliStun);
-    }
-    if (!cliTurn.empty()) {
-        config.turnServers = std::move(cliTurn);
+    if (config.offline) {
+        config.noStun = true;
+        config.noTurn = true;
+        config.signalingUrl.clear();
+    } else if (config.signalingUrl.empty()) {
+        config.signalingUrl = DEFAULT_SIGNALING_URL;
     }
 
     if (config.stunServers.empty() && !config.noStun) {
@@ -206,29 +262,267 @@ void printUsage() {
     std::cout << "AetherProxy - share your terminal over WebRTC.\n"
                  "\n"
                  "Usage:\n"
-                 "  aetherproxy                     Share your shell.\n"
-                 "  aetherproxy -- <command>        Share one command.\n"
-                 "  <cmd> | aetherproxy             Stream piped output.\n"
-                 "  aetherproxy collab              Start a collaborative session.\n"
-                 "  aetherproxy connect <room>      Join a remote session.\n"
+                 "  aetherproxy                Share your shell.\n"
+                 "  aetherproxy -- <command>   Share one command.\n"
+                 "  <cmd> | aetherproxy        Stream piped output.\n"
                  "\n"
                  "Options:\n"
-                 "  --port <n>          HTTP port. Default 8080.\n"
-                 "  --stun <server>     Add a STUN server.\n"
-                 "  --turn <server>     Add a TURN server.\n"
-                 "  --turn-user <name>  TURN username.\n"
-                 "  --turn-pass <pass>  TURN password.\n"
-                 "  --no-stun           Disable STUN.\n"
-                 "  --no-turn           Disable TURN.\n"
-                 "  --signal <url>      Signaling server URL. Enables internet mode.\n"
-                 "  --max-clients <n>   Client limit. Default 10, max 32.\n"
-                 "  --idle-timeout <n>  Exit after n seconds without clients. Default 3600.\n"
-                 "  -h, --help          Show this help.\n"
-                 "  -V, --version       Show version.\n"
+                 "  collab             Start a collaborative session.\n"
+                 "  interactive        Open the shell in your browser.\n"
+                 "  connect <room>     Join a remote session.\n"
+                 "  config <op>        Manage saved settings.\n"
+                 "  help               Show this help.\n"
+                 "  version            Show version.\n"
+                 "  --offline          One run with no external servers.\n"
                  "\n"
-                 "Config file: ~/.config/aetherproxy/config.toml\n";
+                 "Config:\n"
+                 "  aetherproxy config list\n"
+                 "  aetherproxy config get <key>\n"
+                 "  aetherproxy config set <key> <value>\n"
+                 "  aetherproxy config unset <key>\n"
+                 "\n"
+                 "  List shows all keys and current values.\n"
+                 "\n"
+                 "Config file: "
+              << configFilePath() << "\n";
 }
 
 std::string versionString() {
     return AETHER_VERSION;
+}
+
+static const std::map<std::string, char> CONFIG_KEYS = {
+    {"port", 'n'},      {"max-clients", 'n'}, {"idle-timeout", 'n'}, {"stun", 's'},   {"turn", 's'},    {"turn-user", 's'},
+    {"turn-pass", 's'}, {"no-stun", 'b'},     {"no-turn", 'b'},      {"signal", 's'}, {"offline", 'b'},
+};
+
+static std::map<std::string, std::string> readFileConfig() {
+    std::map<std::string, std::string> values;
+    ensureConfigFile();
+    std::ifstream file(configFilePath());
+    if (!file) {
+        return values;
+    }
+    std::stringstream ss;
+    ss << file.rdbuf();
+    const std::string content = ss.str();
+
+    std::string_view ice = sectionText(content, "[ice]");
+    size_t keyPos = findKey(ice, "stun");
+    if (keyPos != std::string_view::npos) {
+        size_t open = ice.find('[', keyPos);
+        size_t close = ice.find(']', open);
+        if (open != std::string_view::npos && close != std::string_view::npos) {
+            std::string_view arr = ice.substr(open, close - open);
+            std::string joined;
+            size_t pos = 0;
+            while (pos != std::string_view::npos) {
+                std::string v = extractQuoted(arr, pos);
+                if (!v.empty()) {
+                    if (!joined.empty()) {
+                        joined += ",";
+                    }
+                    joined += v;
+                }
+            }
+            if (!joined.empty()) {
+                values["stun"] = joined;
+            }
+        }
+    }
+    keyPos = findKey(ice, "turn");
+    if (keyPos != std::string_view::npos) {
+        size_t open = ice.find('{', keyPos);
+        size_t close = ice.find('}', open);
+        if (open != std::string_view::npos && close != std::string_view::npos) {
+            std::string_view block = ice.substr(open, close - open);
+            size_t p = findKey(block, "url");
+            if (p != std::string_view::npos) {
+                values["turn"] = extractQuoted(block, p);
+            }
+            p = findKey(block, "username");
+            if (p != std::string_view::npos) {
+                values["turn-user"] = extractQuoted(block, p);
+            }
+            p = findKey(block, "credential");
+            if (p != std::string_view::npos) {
+                values["turn-pass"] = extractQuoted(block, p);
+            }
+        }
+    }
+    keyPos = findKey(ice, "no_stun");
+    if (keyPos != std::string_view::npos) {
+        values["no-stun"] = tokenAfter(ice, keyPos);
+    }
+    keyPos = findKey(ice, "no_turn");
+    if (keyPos != std::string_view::npos) {
+        values["no-turn"] = tokenAfter(ice, keyPos);
+    }
+
+    std::string_view session = sectionText(content, "[session]");
+    for (const auto &[fileKey, flatKey] : std::vector<std::pair<std::string, std::string>>{
+             {"port", "port"}, {"max_clients", "max-clients"}, {"idle_timeout", "idle-timeout"}}) {
+        size_t p = findKey(session, fileKey);
+        if (p != std::string_view::npos) {
+            long v = parseNumberAt(session, p);
+            if (v >= 0) {
+                values[flatKey] = std::to_string(v);
+            }
+        }
+    }
+    keyPos = findKey(session, "signal");
+    if (keyPos != std::string_view::npos) {
+        size_t p = keyPos;
+        std::string v = extractQuoted(session, p);
+        if (!v.empty()) {
+            values["signal"] = v;
+        }
+    }
+    keyPos = findKey(session, "offline");
+    if (keyPos != std::string_view::npos) {
+        values["offline"] = tokenAfter(session, keyPos);
+    }
+    return values;
+}
+
+static bool writeFileConfig(const std::map<std::string, std::string> &values) {
+    std::string path = configFilePath();
+    if (path.empty()) {
+        return false;
+    }
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+    std::ofstream out(path, std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+
+    bool hasIce = values.contains("stun") || values.contains("turn") || values.contains("turn-user") || values.contains("turn-pass") ||
+                  values.contains("no-stun") || values.contains("no-turn");
+    if (hasIce) {
+        out << "[ice]\n";
+        if (values.contains("stun")) {
+            out << "stun = [";
+            std::string_view rest = values.at("stun");
+            bool first = true;
+            while (!rest.empty()) {
+                size_t comma = rest.find(',');
+                std::string_view item = rest.substr(0, comma);
+                if (!item.empty()) {
+                    out << (first ? "" : ", ") << '"' << item << '"';
+                    first = false;
+                }
+                rest = (comma == std::string_view::npos) ? std::string_view{} : rest.substr(comma + 1);
+            }
+            out << "]\n";
+        }
+        if (values.contains("turn") || values.contains("turn-user") || values.contains("turn-pass")) {
+            out << "turn = [ { url = \"" << (values.contains("turn") ? values.at("turn") : "") << "\", username = \""
+                << (values.contains("turn-user") ? values.at("turn-user") : "") << "\", credential = \""
+                << (values.contains("turn-pass") ? values.at("turn-pass") : "") << "\" } ]\n";
+        }
+        if (values.contains("no-stun")) {
+            out << "no_stun = " << values.at("no-stun") << "\n";
+        }
+        if (values.contains("no-turn")) {
+            out << "no_turn = " << values.at("no-turn") << "\n";
+        }
+        out << "\n";
+    }
+
+    bool hasSession = values.contains("port") || values.contains("max-clients") || values.contains("idle-timeout") ||
+                      values.contains("signal") || values.contains("offline");
+    if (hasSession) {
+        out << "[session]\n";
+        if (values.contains("port")) {
+            out << "port = " << values.at("port") << "\n";
+        }
+        if (values.contains("max-clients")) {
+            out << "max_clients = " << values.at("max-clients") << "\n";
+        }
+        if (values.contains("idle-timeout")) {
+            out << "idle_timeout = " << values.at("idle-timeout") << "\n";
+        }
+        if (values.contains("signal")) {
+            out << "signal = \"" << values.at("signal") << "\"\n";
+        }
+        if (values.contains("offline")) {
+            out << "offline = " << values.at("offline") << "\n";
+        }
+    }
+    return true;
+}
+
+static bool validConfigValue(char kind, const std::string &value) {
+    if (kind == 'n') {
+        return !value.empty() && std::ranges::all_of(value, [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; });
+    }
+    if (kind == 'b') {
+        return value == "true" || value == "false";
+    }
+    return !value.empty();
+}
+
+int runConfigCommand(const std::vector<std::string> &args) {
+    auto keysLine = []() {
+        std::string keys;
+        for (const auto &[key, kind] : CONFIG_KEYS) {
+            if (!keys.empty()) {
+                keys += ", ";
+            }
+            keys += key;
+        }
+        return keys;
+    };
+
+    if (args.empty() || args[0] == "list") {
+        for (const auto &[key, value] : readFileConfig()) {
+            std::cout << key << "=" << value << "\n";
+        }
+        return 0;
+    }
+    const std::string &op = args[0];
+    if (op == "get" && args.size() == 2) {
+        auto values = readFileConfig();
+        auto it = values.find(args[1]);
+        if (it == values.end()) {
+            return 1;
+        }
+        std::cout << it->second << "\n";
+        return 0;
+    }
+    if (op == "set" && args.size() == 3) {
+        auto keyIt = CONFIG_KEYS.find(args[1]);
+        if (keyIt == CONFIG_KEYS.end()) {
+            std::cerr << "Unknown key: " << args[1] << "\nKeys: " << keysLine() << "\n";
+            return 1;
+        }
+        if (!validConfigValue(keyIt->second, args[2])) {
+            std::cerr << "Bad value for " << args[1] << ": " << args[2] << "\n";
+            return 1;
+        }
+        auto values = readFileConfig();
+        values[args[1]] = args[2];
+        if (!writeFileConfig(values)) {
+            std::cerr << "Cannot write config file.\n";
+            return 1;
+        }
+        return 0;
+    }
+    if (op == "unset" && args.size() == 2) {
+        auto values = readFileConfig();
+        values.erase(args[1]);
+        if (!writeFileConfig(values)) {
+            std::cerr << "Cannot write config file.\n";
+            return 1;
+        }
+        return 0;
+    }
+    std::cerr << "Usage:\n"
+                 "  aetherproxy config list\n"
+                 "  aetherproxy config get <key>\n"
+                 "  aetherproxy config set <key> <value>\n"
+                 "  aetherproxy config unset <key>\n"
+                 "Keys: "
+              << keysLine() << "\n";
+    return 1;
 }

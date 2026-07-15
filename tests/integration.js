@@ -11,10 +11,13 @@
 
 'use strict';
 
-const { chromium, firefox } = require('@playwright/test');
-const { spawn }              = require('child_process');
+const { chromium, firefox }  = require('@playwright/test');
+const { spawn, execFileSync } = require('child_process');
 const assert                 = require('assert');
 const http                   = require('http');
+const fs                     = require('fs');
+const os                     = require('os');
+const path                   = require('path');
 
 // ################ helpers ################
 
@@ -37,27 +40,48 @@ function fetchText(url) {
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 /**
+ * Returns an env with an isolated HOME whose saved config sets the test
+ * port. The port flag is config-only now, so hosts pick it up from there.
+ */
+let TEST_HOME = null;
+function testEnv() {
+    if (!TEST_HOME) {
+        TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'aether-test-home-'));
+        const env = { ...process.env, HOME: TEST_HOME };
+        execFileSync(BINARY, ['config', 'set', 'port', String(PORT)], { env });
+        // Offline keeps test hosts away from real STUN/TURN/signaling servers.
+        execFileSync(BINARY, ['config', 'set', 'offline', 'true'], { env });
+    }
+    return { ...process.env, HOME: TEST_HOME };
+}
+
+/**
  * Spawns the aetherproxy binary with the given extra args and optional stdin
  * bytes. Returns { proc, roomCode, stdout } once the server is ready.
  *
- * @param {string[]} extraArgs   Extra CLI args after --port PORT.
+ * @param {string[]} extraArgs   Extra CLI args.
  * @param {Buffer|null} stdinBuf  If non-null, written to stdin then closed.
  * @param {number} timeoutMs      How long to wait for "Server listening".
  */
-async function spawnHost(extraArgs = [], stdinBuf = null, timeoutMs = 12_000) {
-    const args = ['--port', String(PORT), ...extraArgs];
+async function spawnHost(extraArgs = [], stdinBuf = null, timeoutMs = 12_000, extraEnv = {}) {
+    const args = [...extraArgs];
+    const env  = { ...testEnv(), ...extraEnv };
     let proc;
     if (stdinBuf !== null) {
         // Pipe mode: feed bytes over stdin.
         proc = spawn(BINARY, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
             detached: true,
+            env,
         });
     } else {
         // Terminal mode: allocate a PTY via script(1) so isatty(stdin) is true.
+        // stdin stays open as a pipe; script forwards writes to the PTY, so
+        // tests can type into the host's local terminal.
         proc = spawn('script', ['-qefc', [BINARY, ...args].join(' '), '/dev/null'], {
-            stdio: ['ignore', 'pipe', 'pipe'],
+            stdio: ['pipe', 'pipe', 'pipe'],
             detached: true,
+            env,
         });
     }
 
@@ -65,10 +89,12 @@ async function spawnHost(extraArgs = [], stdinBuf = null, timeoutMs = 12_000) {
     let roomCode  = '';
 
     const ready = new Promise((resolve, reject) => {
-        const timer = setTimeout(
-            () => reject(new Error(`Host startup timeout after ${timeoutMs}ms`)),
-            timeoutMs,
-        );
+        const timer = setTimeout(() => {
+            // Kill the half-started host so it cannot leak and hold the port.
+            try { process.kill(-proc.pid, 'SIGKILL'); }
+            catch { try { proc.kill('SIGKILL'); } catch { /* already gone */ } }
+            reject(new Error(`Host startup timeout after ${timeoutMs}ms`));
+        }, timeoutMs);
 
         proc.stdout.on('data', data => {
             stdoutBuf += data.toString();
@@ -94,6 +120,16 @@ async function spawnHost(extraArgs = [], stdinBuf = null, timeoutMs = 12_000) {
 
     await ready;
     return { proc, roomCode, getStdout: () => stdoutBuf };
+}
+
+/** Polls until predicate() is truthy or the timeout expires. */
+async function waitUntil(predicate, timeoutMs = 10_000, stepMs = 200) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (predicate()) return true;
+        await wait(stepMs);
+    }
+    return false;
 }
 
 /** Kills a host process group and waits for exit; tolerates already-dead hosts. */
@@ -204,6 +240,81 @@ async function testQrCodeInOutput() {
     console.log('  [T-03] QR code in output ✓');
 }
 
+/**
+ * T-14  Config subcommand
+ * Exercises config set/get/list/unset in an isolated HOME, then asserts
+ * a saved port is actually used by the host.
+ */
+async function testConfigCommand() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aether-home-'));
+    const env  = { ...process.env, HOME: home };
+    const run  = (args, opts = {}) =>
+        execFileSync(BINARY, args, { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+
+    run(['config', 'set', 'port', '9091']);
+    assert.strictEqual(run(['config', 'get', 'port']).trim(), '9091', 'get must return the saved value');
+
+    run(['config', 'set', 'no-turn', 'true']);
+    run(['config', 'set', 'offline', 'true']);
+    run(['config', 'set', 'stun', 'stun:one.example:3478,stun:two.example:3478']);
+    const list = run(['config', 'list']);
+    assert.ok(list.includes('port=9091'),   'list must show port');
+    assert.ok(list.includes('no-turn=true'), 'list must show no-turn');
+    assert.ok(list.includes('offline=true'), 'list must show offline');
+    assert.ok(list.includes('stun=stun:one.example:3478,stun:two.example:3478'), 'list must show stun');
+
+    let badKeyFailed = false;
+    try { run(['config', 'set', 'bogus', '1']); } catch { badKeyFailed = true; }
+    assert.ok(badKeyFailed, 'setting an unknown key must exit non-zero');
+
+    run(['config', 'unset', 'port']);
+    let getFailed = false;
+    try { run(['config', 'get', 'port']); } catch { getFailed = true; }
+    assert.ok(getFailed, 'get after unset must exit non-zero');
+
+    // A saved port must drive the host with no --port flag.
+    run(['config', 'set', 'port', '9092']);
+    run(['config', 'set', 'offline', 'true']);
+    const proc = spawn(BINARY, [], { stdio: ['pipe', 'pipe', 'pipe'], env, detached: true });
+    let out = '';
+    proc.stdout.on('data', d => (out += d.toString()));
+    const usedSavedPort = await waitUntil(() => out.includes('Server listening on port 9092'), 8000);
+    await killHost(proc);
+    assert.ok(usedSavedPort, 'host must listen on the port saved via config set');
+
+    console.log('  [T-14] Config subcommand ✓');
+}
+
+/**
+ * T-15  Offline mode
+ * Uses a fresh HOME with no offline config so the behavior comes from
+ * the --offline flag alone (the one per-run flag). Asserts local SDP
+ * offers still work and no signaling connection is reported.
+ */
+async function testOfflineMode() {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aether-home-t15-'));
+    const env  = { ...process.env, HOME: home };
+    execFileSync(BINARY, ['config', 'set', 'port', String(PORT)], { env });
+
+    const proc = spawn(BINARY, ['--offline'], { stdio: ['pipe', 'pipe', 'pipe'], env, detached: true });
+    let out = '';
+    proc.stdout.on('data', d => (out += d.toString()));
+    try {
+        const started = await waitUntil(() => out.includes('Server listening on port'), 8000);
+        assert.ok(started, 'offline host must start its HTTP server');
+        const offerRes = await fetchText(`http://localhost:${PORT}/offer?id=t15-client`);
+        assert.strictEqual(offerRes.status, 200, 'GET /offer must return 200 in offline mode');
+        assert.ok(offerRes.body.startsWith('v=0'), 'offline offer must be valid SDP');
+        assert.ok(
+            !out.includes('Signaling connected'),
+            'offline host must not connect to signaling',
+        );
+        console.log('  [T-15] Offline mode ✓');
+    } finally {
+        await killHost(proc);
+    }
+}
+
 // ################ BROWSER-SIDE binary tests ################
 
 /**
@@ -263,7 +374,7 @@ async function testPipeMode(browserType, browserName) {
             };
         });
 
-        await page.goto(`http://localhost:${PORT}/`);
+        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
 
         // Wait for the EOF frame (up to 10 s).
         await page.waitForFunction(() => window._aether_gotEof === true, { timeout: 10_000 });
@@ -335,7 +446,7 @@ async function testTerminalResize(browserType, browserName) {
             };
         });
 
-        await page.goto(`http://localhost:${PORT}/`);
+        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
 
         // Wait for the data channel to open (up to 15 s).
         await page.waitForFunction(() => window._aether_dcOpen === true, { timeout: 15_000 });
@@ -384,17 +495,150 @@ async function testTerminalResize(browserType, browserName) {
     }
 }
 
+/**
+ * T-13  Local terminal bridge.
+ *
+ * The host terminal must stay interactive while shared:
+ *   a) A command typed into the host PTY produces local output.
+ *   b) A command typed in the browser terminal echoes on the host PTY.
+ */
+async function testLocalBridge(browserType, browserName) {
+    const { proc, getStdout } = await spawnHost();
+    const browser = await browserType.launch({ headless: true });
+    const page    = await browser.newPage();
+
+    try {
+        // a) Local input reaches the shared shell and echoes locally.
+        await wait(1000); // allow the inner shell to print its prompt
+        proc.stdin.write('echo local_bridge_$((20+3))\r');
+        const localOk = await waitUntil(() => getStdout().includes('local_bridge_23'));
+        assert.ok(localOk, 'Local keystrokes must reach the shared shell and echo locally');
+
+        // b) Browser input echoes on the host terminal.
+        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
+        await page.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Connected',
+            { timeout: 15_000 },
+        );
+        await page.click('#terminal-container');
+        await page.evaluate(() => document.querySelector('.xterm-helper-textarea')?.focus());
+        await wait(300);
+        await page.keyboard.type('echo browser_bridge_$((40+2))');
+        await page.keyboard.press('Enter');
+        const remoteOk = await waitUntil(() => getStdout().includes('browser_bridge_42'));
+        assert.ok(remoteOk, 'Browser keystrokes must echo on the host terminal');
+
+        console.log(`  [T-13] Local terminal bridge (${browserName}) ✓`);
+    } finally {
+        await browser.close();
+        await killHost(proc);
+    }
+}
+
+/**
+ * T-16  Interactive mode lifecycle.
+ *
+ * `aetherproxy interactive` launches a browser ($BROWSER honoured) and exits
+ * on its own once the last client disconnects. BROWSER=/bin/true suppresses
+ * a real browser; the test connects its own Playwright page instead.
+ */
+async function testInteractiveLifecycle(browserType, browserName) {
+    const { proc, getStdout } = await spawnHost(
+        ['interactive'], null, 12_000, { BROWSER: '/bin/true' },
+    );
+    const browser = await browserType.launch({ headless: true });
+    let exited = false;
+    proc.on('exit', () => { exited = true; });
+
+    try {
+        assert.ok(
+            await waitUntil(() => getStdout().includes('Opening browser')),
+            'Interactive mode must announce the browser launch',
+        );
+
+        const page = await browser.newPage();
+        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
+        await page.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Connected',
+            { timeout: 15_000 },
+        );
+
+        // Stays alive past the grace period while the client is connected.
+        await wait(5_000);
+        assert.ok(!exited, 'Host must stay alive while the browser client is connected');
+
+        // Bridge works in interactive mode.
+        await page.click('#terminal-container');
+        await page.evaluate(() => document.querySelector('.xterm-helper-textarea')?.focus());
+        await wait(300);
+        await page.keyboard.type('echo interactive_bridge_$((50+6))');
+        await page.keyboard.press('Enter');
+        assert.ok(
+            await waitUntil(() => getStdout().includes('interactive_bridge_56')),
+            'Browser keystrokes must reach the shell in interactive mode',
+        );
+
+        // Leaving the page fires pagehide, which sends the bye frame.
+        await page.goto('about:blank');
+        await browser.close();
+        assert.ok(
+            await waitUntil(() => exited, 20_000),
+            'Host must exit on its own after the browser client disconnects',
+        );
+
+        console.log(`  [T-16] Interactive lifecycle (${browserName}) ✓`);
+    } finally {
+        if (browser.isConnected()) await browser.close();
+        if (!exited) await killHost(proc);
+    }
+}
+
+/**
+ * T-17  Landing page.
+ *
+ * Without a #room fragment the client shows a landing page with a room
+ * input. Entering a code reveals the terminal and connects.
+ */
+async function testLandingPage(browserType, browserName) {
+    const { proc } = await spawnHost();
+    const browser = await browserType.launch({ headless: true });
+    const page = await browser.newPage();
+    try {
+        await page.goto(`http://localhost:${PORT}/`);
+        assert.ok(await page.isVisible('#landing'), 'Landing must show without a room fragment');
+        assert.ok(await page.isVisible('#room-input'), 'Landing must offer a room input');
+
+        await page.fill('#room-input', 'fox-river-stone-48291');
+        await page.click('#room-go');
+        await page.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Connected',
+            { timeout: 15_000 },
+        );
+        assert.ok(await page.isHidden('#landing'), 'Landing must hide after entering a room');
+
+        console.log(`  [T-17] Landing page (${browserName}) ✓`);
+    } finally {
+        await browser.close();
+        await killHost(proc);
+    }
+}
+
 // ################ test registry and runner ################
 
 const BINARY_TESTS = [
     { name: 'T-01  Room code format',       fn: testRoomCodeFormat   },
     { name: 'T-02  HTTP server + SDP offer', fn: testHttpServerAndSdp },
     { name: 'T-03  QR code in output',       fn: testQrCodeInOutput   },
+    { name: 'T-14  Config subcommand',       fn: testConfigCommand    },
+    { name: 'T-15  Offline mode',            fn: testOfflineMode      },
 ];
 
 const BROWSER_TESTS = [
     { name: 'T-04  Pipe mode',        fn: testPipeMode      },
     { name: 'T-05  Terminal resize',  fn: testTerminalResize },
+    { name: 'T-13  Local terminal bridge', fn: testLocalBridge },
+    { name: 'T-16  Interactive lifecycle', fn: testInteractiveLifecycle },
+    { name: 'T-17  Landing page',          fn: testLandingPage },
 ];
 
 // DOM-only tests from the previous session (no real WebRTC needed).
@@ -404,7 +648,7 @@ async function runDomTests(browserType, browserName) {
     const page     = await browser.newPage();
 
     try {
-        await page.goto(`http://localhost:${PORT}/`);
+        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
         await wait(1500);
 
         // T-06  Page title.

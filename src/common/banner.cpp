@@ -8,7 +8,15 @@
 
 static size_t displayWidth(const std::string &s) {
     size_t w = 0;
-    for (unsigned char c : s) {
+    for (size_t i = 0; i < s.size(); ++i) {
+        auto c = static_cast<unsigned char>(s[i]);
+        if (c == 0x1B && i + 1 < s.size() && s[i + 1] == '[') {
+            i += 2;
+            while (i < s.size() && (static_cast<unsigned char>(s[i]) < 0x40 || static_cast<unsigned char>(s[i]) > 0x7E)) {
+                ++i;
+            }
+            continue;
+        }
         if ((c & 0xC0) != 0x80) {
             ++w;
         }
@@ -33,7 +41,7 @@ static std::pair<int, int> terminalSize() {
     return {24, 80};
 }
 
-void renderStartupScreen(const std::string &room, const std::string &url) {
+void renderStartupScreen(const std::string &room, const std::string &url, bool localShell) {
     auto [rows, cols] = terminalSize();
 
     std::vector<std::string> info = logoLines();
@@ -42,6 +50,13 @@ void renderStartupScreen(const std::string &room, const std::string &url) {
     info.push_back("Link:  " + url);
     info.emplace_back("");
     info.emplace_back("Scan the QR code or open the link.");
+    if (localShell) {
+        info.emplace_back("\x1b[3mThis shell stays live below.\x1b[23m");
+        info.emplace_back("\x1b[3mType exit to end the session.\x1b[23m");
+        info.emplace_back("\x1b[3mYour terminal is restored after exit.\x1b[23m");
+    } else {
+        info.emplace_back("\x1b[3mViewers are read only.\x1b[23m");
+    }
 
     size_t leftWidth = 0;
     for (const auto &line : info) {

@@ -1,6 +1,5 @@
 #include "common/signaling_client.hpp"
 #include <nlohmann/json.hpp>
-#include <iostream>
 
 using json = nlohmann::json;
 
@@ -42,6 +41,12 @@ void SignalingClient::connect(const std::string &url, const std::string &roomCod
         }
     });
 
+    ws->onError([this](std::string error) {
+        if (errorCallback) {
+            errorCallback(std::move(error));
+        }
+    });
+
     ws->open(url);
 }
 
@@ -59,4 +64,8 @@ void SignalingClient::onMessage(std::function<void(std::string type, std::string
 
 void SignalingClient::onOpen(std::function<void()> cb) {
     openCallback = std::move(cb);
+}
+
+void SignalingClient::onError(std::function<void(std::string reason)> cb) {
+    errorCallback = std::move(cb);
 }

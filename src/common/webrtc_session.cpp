@@ -42,6 +42,15 @@ void WebRTCSession::initialize(const std::vector<std::string> &stunServers, cons
         }
     });
 
+    pc->onStateChange([this](rtc::PeerConnection::State state) {
+        if (state == rtc::PeerConnection::State::Disconnected || state == rtc::PeerConnection::State::Failed ||
+            state == rtc::PeerConnection::State::Closed) {
+            if (disconnectCallback) {
+                disconnectCallback();
+            }
+        }
+    });
+
     pc->onLocalCandidate([this](const rtc::Candidate &cand) {
         if (candidateCallback) {
             candidateCallback(std::string(cand), cand.mid());
@@ -67,6 +76,12 @@ void WebRTCSession::registerDataChannelCallbacks() {
         std::cout << "DataChannel opened. DTLS active." << "\n" << std::flush;
         if (openCallback) {
             openCallback();
+        }
+    });
+
+    dc->onClosed([this]() {
+        if (disconnectCallback) {
+            disconnectCallback();
         }
     });
 

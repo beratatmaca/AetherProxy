@@ -5,6 +5,13 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Static build. Must be set before dependencies are fetched.
+option(STATIC_BUILD "Build static binary" OFF)
+if(STATIC_BUILD)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+    set(BUILD_SHARED_LIBS OFF)
+endif()
+
 # Include FetchContent for dependencies
 include(FetchContent)
 
@@ -68,8 +75,18 @@ target_compile_definitions(aetherproxy PRIVATE AETHER_VERSION="${AETHER_VERSION}
 
 target_include_directories(aetherproxy PRIVATE src ${qrencode_SOURCE_DIR})
 
-# Link dependencies
-target_link_libraries(aetherproxy PRIVATE datachannel qrencode util nlohmann_json::nlohmann_json)
+# Link dependencies. libdatachannel ships a separate static target.
+if(STATIC_BUILD)
+    target_link_libraries(aetherproxy PRIVATE datachannel-static qrencode nlohmann_json::nlohmann_json)
+else()
+    target_link_libraries(aetherproxy PRIVATE datachannel qrencode nlohmann_json::nlohmann_json)
+endif()
+
+# musl folds forkpty into libc. Link libutil only where it exists.
+find_library(UTIL_LIB util)
+if(UTIL_LIB)
+    target_link_libraries(aetherproxy PRIVATE util)
+endif()
 
 # Asset embedding custom command
 add_custom_target(embed_assets
@@ -91,11 +108,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Tsan")
     target_link_options(aetherproxy PRIVATE -fsanitize=thread)
 endif()
 
-# Static build support options
-option(STATIC_BUILD "Build static binary" OFF)
+# Static link flag. The option itself is declared near the top.
 if(STATIC_BUILD)
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
-    set(BUILD_SHARED_LIBS OFF)
     target_link_options(aetherproxy PRIVATE -static)
 endif()
 
@@ -115,6 +129,11 @@ if(CLANG_FORMAT_BIN)
         COMMAND ${CLANG_FORMAT_BIN} -i ${AETHER_ALL_SOURCES}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Formatting sources with clang-format"
+    )
+    add_custom_target(format-check
+        COMMAND ${CLANG_FORMAT_BIN} --dry-run --Werror ${AETHER_ALL_SOURCES}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Checking formatting with clang-format"
     )
 endif()
 

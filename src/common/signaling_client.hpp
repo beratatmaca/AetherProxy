@@ -25,9 +25,13 @@ public:
     /// Sets socket open callback.
     void onOpen(std::function<void()> cb);
 
+    /// Sets socket error callback.
+    void onError(std::function<void(std::string reason)> cb);
+
 private:
     std::shared_ptr<rtc::WebSocket> ws;
     std::string room;
     std::function<void(std::string type, std::string data)> messageCallback;
     std::function<void()> openCallback;
+    std::function<void(std::string reason)> errorCallback;
 };

@@ -14,7 +14,10 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 #include <csignal>
+#include <cstdlib>
 #include "common/raw_tty.hpp"
 #include "common/config.hpp"
 #include "common/pty_source.hpp"
@@ -28,7 +31,7 @@
 #include "host/session_registry.hpp"
 #include "client/native_client.hpp"
 
-enum class SessionMode : std::uint8_t { Terminal, Command, Pipe, Client, Collab };
+enum class SessionMode : std::uint8_t { Terminal, Command, Pipe, Client, Collab, Interactive };
 
 bool hasFlag(const std::vector<std::string_view> &args, std::string_view flag) {
     return std::find(args.begin(), args.end(), flag) != args.end();
@@ -85,6 +88,34 @@ static void writeFull(int fd, const char *data, size_t len) {
     }
 }
 
+static void launchBrowser(const std::string &url) {
+    const char *env = std::getenv("BROWSER");
+    std::string cmd = (env != nullptr && *env != '\0') ? env : "xdg-open";
+
+    pid_t pid = fork();
+    if (pid != 0) {
+        if (pid > 0) {
+            int status = 0;
+            waitpid(pid, &status, 0);
+        }
+        return;
+    }
+    if (fork() != 0) {
+        _exit(0);
+    }
+    int devNull = open("/dev/null", O_RDWR);
+    if (devNull != -1) {
+        dup2(devNull, STDIN_FILENO);
+        dup2(devNull, STDOUT_FILENO);
+        dup2(devNull, STDERR_FILENO);
+        if (devNull > STDERR_FILENO) {
+            close(devNull);
+        }
+    }
+    execlp(cmd.c_str(), cmd.c_str(), url.c_str(), static_cast<char *>(nullptr));
+    _exit(127);
+}
+
 SessionMode detectMode(const std::vector<std::string_view> &args) {
     if (isatty(STDIN_FILENO) == 0) {
         return SessionMode::Pipe;
@@ -94,6 +125,9 @@ SessionMode detectMode(const std::vector<std::string_view> &args) {
     }
     if (hasFlag(args, "collab")) {
         return SessionMode::Collab;
+    }
+    if (hasFlag(args, "interactive")) {
+        return SessionMode::Interactive;
     }
     if (hasFlag(args, "--")) {
         return SessionMode::Command;
@@ -106,13 +140,19 @@ int main(int argc, char *argv[]) {
 
     auto delim = std::find(args.begin(), args.end(), "--");
     std::vector<std::string_view> ownArgs(args.begin(), delim);
-    if (hasFlag(ownArgs, "--help") || hasFlag(ownArgs, "-h")) {
+    bool wantHelp = hasFlag(ownArgs, "--help") || hasFlag(ownArgs, "-h") || (!args.empty() && args[0] == "help");
+    if (wantHelp) {
         printUsage();
         return 0;
     }
-    if (hasFlag(ownArgs, "--version") || hasFlag(ownArgs, "-V")) {
+    bool wantVersion =
+        hasFlag(ownArgs, "--version") || hasFlag(ownArgs, "-V") || hasFlag(ownArgs, "-v") || (!args.empty() && args[0] == "version");
+    if (wantVersion) {
         std::cout << "aetherproxy " << versionString() << "\n" << std::flush;
         return 0;
+    }
+    if (!args.empty() && args[0] == "config") {
+        return runConfigCommand(std::vector<std::string>(argv + 2, argv + argc));
     }
 
     SessionMode mode = detectMode(args);
@@ -120,11 +160,12 @@ int main(int argc, char *argv[]) {
 
     if (mode == SessionMode::Client) {
         if (argc < 3) {
-            std::cerr << "Usage: aetherproxy connect <room> [--signal <url>]\n";
+            std::cerr << "Usage: aetherproxy connect <room>\n";
             return 1;
         }
         if (config.signalingUrl.empty()) {
-            std::cerr << "Error: internet mode requires --signal <ws://server>\n";
+            std::cerr << "Error: no signaling server set.\n"
+                      << "Run: aetherproxy config set offline false\n";
             return 1;
         }
         NativeClient client;
@@ -136,7 +177,7 @@ int main(int argc, char *argv[]) {
     std::string room = generateRoomCode();
     std::string lanIp = getLanIp();
     std::string url = "http://" + lanIp + ":" + std::to_string(config.port) + "/#" + room;
-    renderStartupScreen(room, url);
+    renderStartupScreen(room, url, mode != SessionMode::Pipe);
 
     std::shared_ptr<IOSource> io;
     if (mode == SessionMode::Pipe) {
@@ -173,8 +214,7 @@ int main(int argc, char *argv[]) {
     const size_t sessionLimit = static_cast<size_t>(std::min(config.maxClients, 32));
 
     HttpServer server;
-    std::thread serverThread([&server, &config, &eq, &sessions, &sessionsMutex, sessionLimit]() {
-        std::cout << "Server listening on port " << config.port << "\n" << std::flush;
+    std::thread serverThread([&server, &config, &eq, &sessions, &sessionsMutex, sessionLimit, &running]() {
         server.start(
             config.port,
             [&config, &eq, &sessions, &sessionsMutex, sessionLimit](const std::string &clientId) {
@@ -203,8 +243,14 @@ int main(int argc, char *argv[]) {
                     it->second->setAnswer(answer);
                 }
             });
+        running = false;
     });
     serverThread.detach();
+
+    if (mode == SessionMode::Interactive) {
+        std::cout << "Opening browser...\n" << std::flush;
+        launchBrowser("http://127.0.0.1:" + std::to_string(config.port) + "/#" + room);
+    }
 
     std::shared_ptr<SignalingClient> sigClient;
     if (!config.signalingUrl.empty()) {
@@ -262,8 +308,17 @@ int main(int argc, char *argv[]) {
                 }
             }
         });
-        sigClient->connect(config.signalingUrl, room);
-        std::cout << "Signaling connected: " << config.signalingUrl << "  room=" << room << "\n" << std::flush;
+        sigClient->onOpen([&config, room]() {
+            std::cout << "Signaling connected: " << config.signalingUrl << "  room=" << room << "\r\n" << std::flush;
+        });
+        sigClient->onError([](const std::string &reason) {
+            std::cout << "Signaling unreachable: " << reason << "\r\nLocal links still work.\r\n" << std::flush;
+        });
+        try {
+            sigClient->connect(config.signalingUrl, room);
+        } catch (const std::exception &e) {
+            std::cout << "Signaling failed: " << e.what() << "\nLocal links still work.\n" << std::flush;
+        }
     }
 
     int epollFd = epoll_create1(0);
@@ -280,7 +335,7 @@ int main(int argc, char *argv[]) {
     bool localTty = mode != SessionMode::Pipe && isatty(STDIN_FILENO) != 0;
     int winchFd = -1;
     if (localTty) {
-        struct winsize hostWs{};
+        struct winsize hostWs {};
         if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &hostWs) == 0) {
             registry.setBaseSize({hostWs.ws_row, hostWs.ws_col});
         }
@@ -309,6 +364,9 @@ int main(int argc, char *argv[]) {
     constexpr size_t kReplayChunk = 16384;
 
     auto lastClientSeen = std::chrono::steady_clock::now();
+    bool everHadClient = false;
+    constexpr int kInteractiveGraceSeconds = 3;
+    constexpr int kInteractiveConnectTimeoutSeconds = 60;
 
     while (running) {
         auto now = std::chrono::steady_clock::now();
@@ -318,7 +376,13 @@ int main(int argc, char *argv[]) {
         }
 
         if (registry.clientCount() > 0) {
+            everHadClient = true;
             lastClientSeen = now;
+        } else if (mode == SessionMode::Interactive) {
+            auto idle = std::chrono::duration_cast<std::chrono::seconds>(now - lastClientSeen).count();
+            if (idle >= (everHadClient ? kInteractiveGraceSeconds : kInteractiveConnectTimeoutSeconds)) {
+                running = false;
+            }
         } else if (!localTty && config.idleTimeout > 0 &&
                    std::chrono::duration_cast<std::chrono::seconds>(now - lastClientSeen).count() >= config.idleTimeout) {
             running = false;
@@ -339,7 +403,7 @@ int main(int argc, char *argv[]) {
                 uint64_t val = 0;
                 ssize_t r = read(winchFd, &val, sizeof(val));
                 (void)r;
-                struct winsize hostWs{};
+                struct winsize hostWs {};
                 if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &hostWs) == 0) {
                     registry.setBaseSize({hostWs.ws_row, hostWs.ws_col});
                 }
@@ -397,6 +461,10 @@ int main(int argc, char *argv[]) {
                                     uint16_t r = payload["rows"];
                                     uint16_t c = payload["cols"];
                                     registry.updateClientSize(evItem.clientId, {r, c});
+                                } else if (payload.contains("type") && payload["type"] == "bye") {
+                                    registry.removeClient(evItem.clientId);
+                                    std::lock_guard<std::mutex> lock(sessionsMutex);
+                                    sessions.erase(evItem.clientId);
                                 }
                             } catch (...) {
                                 continue;
@@ -430,6 +498,9 @@ int main(int argc, char *argv[]) {
             }
         }
     }
+
+    registry.broadcastControl(std::string(R"({"type":"end"})"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     if (localTty) {
         disableRawTty();

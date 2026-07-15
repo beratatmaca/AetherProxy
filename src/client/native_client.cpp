@@ -95,7 +95,7 @@ void NativeClient::connect(const std::string &signalingUrl, const std::string &r
 }
 
 void NativeClient::run() {
-    enableRawMode();
+    enableRawTty();
     running = true;
 
     while (running) {
@@ -166,5 +166,5 @@ void NativeClient::run() {
             }
         }
     }
-    disableRawMode();
+    disableRawTty();
 }

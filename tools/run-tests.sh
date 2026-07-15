@@ -53,9 +53,12 @@ run_asan() {
   build_preset debug
 
   echo "[run-tests] Running ASan smoke test…"
-  local out
-  out=$(ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
-        timeout 4 build-debug/aetherproxy --port "$((PORT + 1))" 2>&1 || true)
+  local out tmphome
+  tmphome=$(mktemp -d)
+  HOME="$tmphome" build-debug/aetherproxy config set port "$((PORT + 1))" > /dev/null
+  HOME="$tmphome" build-debug/aetherproxy config set offline true > /dev/null
+  out=$(ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 HOME="$tmphome" \
+        timeout 4 build-debug/aetherproxy 2>&1 || true)
   echo "$out"
 
   if echo "$out" | grep -qE '[a-z]+-[a-z]+-[a-z]+-[0-9]{5}'; then
@@ -73,9 +76,12 @@ run_tsan() {
   build_preset tsan
 
   echo "[run-tests] Running TSan smoke test…"
-  local out
-  out=$(TSAN_OPTIONS=halt_on_error=1 \
-        timeout 4 build-tsan/aetherproxy --port "$((PORT + 2))" 2>&1 || true)
+  local out tmphome
+  tmphome=$(mktemp -d)
+  HOME="$tmphome" build-tsan/aetherproxy config set port "$((PORT + 2))" > /dev/null
+  HOME="$tmphome" build-tsan/aetherproxy config set offline true > /dev/null
+  out=$(TSAN_OPTIONS=halt_on_error=1 HOME="$tmphome" \
+        timeout 4 build-tsan/aetherproxy 2>&1 || true)
   echo "$out"
 
   if echo "$out" | grep -qE '[a-z]+-[a-z]+-[a-z]+-[0-9]{5}'; then

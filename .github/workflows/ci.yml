@@ -12,154 +12,107 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ################ Lint: clang-format + clang-tidy ################
-  lint:
-    name: Lint (format + tidy)
+  # ################ Stage 1: format + docs + tidy ################
+  checks:
+    name: Checks (format + docs + tidy)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    container:
+      image: ghcr.io/beratatmaca/aetherproxy/ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install tools
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build clang-format clang-tidy \
-            libssl-dev python3 xxd
+      - uses: actions/cache@v4
+        with:
+          path: build-release
+          key: checks-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: checks-
 
-      - name: Check formatting
-        run: |
-          find src -name '*.cpp' -o -name '*.hpp' | grep -v embedded_assets \
-            | xargs clang-format --dry-run --Werror
-
-      - name: Configure for compile database
+      - name: Configure
         run: |
           bash tools/embed-assets.sh
           cmake --preset release
 
+      - name: Check formatting
+        run: cmake --build build-release --target format-check
+
+      - name: Build docs
+        run: cmake --build build-release --target docs
+
       - name: Run clang-tidy
-        run: |
-          find src -name '*.cpp' | grep -v embedded_assets \
-            | xargs clang-tidy -p build-release --quiet
+        run: cmake --build build-release --target lint
 
-  # ################ Build matrix: g++ and clang++, Debug and Release ################
-  build:
-    name: Build (${{ matrix.compiler }} / ${{ matrix.build_type }})
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        compiler: [g++, clang++]
-        build_type: [Debug, Release]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang cmake ninja-build \
-            libssl-dev python3 xxd
-
-      - name: Embed assets
-        run: bash tools/embed-assets.sh
-
-      - name: Configure
-        run: |
-          cmake -B build-matrix -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
-
-      - name: Build
-        run: cmake --build build-matrix --parallel "$(nproc)"
-
-  # ################ Release build + Playwright integration tests ################
-  integration:
-    name: Integration tests (Release / GCC)
+  # ################ Stage 2: GCC build + integration tests ################
+  build-test:
+    name: Build + integration tests (GCC Release)
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    container:
+      image: ghcr.io/beratatmaca/aetherproxy/ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build \
-            libssl-dev python3 xxd xvfb
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/cache@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: tests/package-lock.json
+          path: build-release
+          key: build-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: build-
 
-      - name: Install Node test dependencies
-        working-directory: tests
-        run: npm ci
+      - name: Build
+        run: |
+          bash tools/embed-assets.sh
+          cmake --preset release
+          cmake --build --preset release --parallel "$(nproc)"
 
-      - name: Install Playwright browsers
-        working-directory: tests
-        run: npx playwright install --with-deps chromium firefox
-
-      - name: Embed assets
-        run: bash tools/embed-assets.sh
-
-      - name: Configure (Release)
-        run: cmake --preset release
-
-      - name: Build (Release)
-        run: cmake --build --preset release
-
-      - name: Symlink binary for test runner
+      - name: Link binary for test runner
         run: |
           mkdir -p build
           ln -sf "$PWD/build-release/aetherproxy" build/aetherproxy
 
+      - name: Install test dependencies
+        working-directory: tests
+        run: |
+          npm ci
+          npx playwright install chromium firefox
+
       - name: Run integration tests
         run: bash tools/run-tests.sh
-        env:
-          DISPLAY: ':99'
 
-  # ################ AddressSanitizer build ################
-  asan:
-    name: ASan build (Debug / GCC)
+  # ################ Stage 2: sanitizers ################
+  sanitizers:
+    name: Sanitizer smoke test (${{ matrix.mode }})
+    needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    container:
+      image: ghcr.io/beratatmaca/aetherproxy/ci:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [asan, tsan]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build \
-            libssl-dev python3 xxd
+      - uses: actions/cache@v4
+        with:
+          path: |
+            build-debug
+            build-tsan
+          key: ${{ matrix.mode }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: ${{ matrix.mode }}-
 
-      - name: Run ASan smoke test
-        run: bash tools/run-tests.sh --asan
-
-  # ################ ThreadSanitizer build ################
-  tsan:
-    name: TSan build (Debug / GCC)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build \
-            libssl-dev python3 xxd
-
-      - name: Run TSan smoke test
-        run: bash tools/run-tests.sh --tsan
+      - name: Run ${{ matrix.mode }} smoke test
+        run: bash tools/run-tests.sh --${{ matrix.mode }}
