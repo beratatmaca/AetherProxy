@@ -557,10 +557,15 @@ async function testInteractiveLifecycle(browserType, browserName) {
 
     const sig = spawn('node', ['tools/signaling-server.js'], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PORT: String(SIG_PORT) },
+        env: {
+            ...process.env,
+            PORT: String(SIG_PORT),
+            NODE_PATH: path.join(__dirname, 'node_modules'),
+        },
     });
     let sigOut = '';
     sig.stdout.on('data', d => (sigOut += d.toString()));
+    sig.stderr.on('data', d => process.stderr.write('[sig err] ' + d));
 
     let host = null;
     let inter = null;
@@ -771,6 +776,70 @@ async function testTelemetryOverlay(browserType, browserName) {
     }
 }
 
+/**
+ * T-21  Input debounce and lock indicator.
+ *
+ * Two collaborators type at once. The second client's input inside the
+ * 500ms debounce window is dropped server-side. The host sends a locked
+ * frame and the second client renders the lock badge with the writer's
+ * name. After the window the second client takes over.
+ */
+async function testInputDebounce(browserType, browserName) {
+    const { proc, getStdout } = await spawnHost();
+    const browser = await browserType.launch({ headless: true });
+    const ctxA = await browser.newContext();
+    const ctxB = await browser.newContext();
+    const pageA = await ctxA.newPage();
+    const pageB = await ctxB.newPage();
+    try {
+        await pageA.addInitScript(() => {
+            try { localStorage.setItem('aether-name', 'alice'); } catch (e) {}
+        });
+        await pageB.addInitScript(() => {
+            try { localStorage.setItem('aether-name', 'bobby'); } catch (e) {}
+        });
+        for (const page of [pageA, pageB]) {
+            await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
+            await page.waitForFunction(
+                () => document.getElementById('status-text').textContent === 'Connected',
+                { timeout: 15_000 },
+            );
+            await page.click('#terminal-container');
+            await page.evaluate(() => document.querySelector('.xterm-helper-textarea')?.focus());
+        }
+        await wait(500);
+
+        // A types first and becomes the writer.
+        await pageA.keyboard.type('AAA');
+        assert.ok(
+            await waitUntil(() => getStdout().includes('AAA'), 5_000),
+            'Writer input must reach the host',
+        );
+
+        // B types inside the debounce window: dropped, badge shows.
+        await pageB.keyboard.type('BBB');
+        await pageB.waitForFunction(
+            () => document.getElementById('lock-badge').classList.contains('visible') &&
+                  document.getElementById('lock-badge-text').textContent.includes('alice'),
+            { timeout: 3_000 },
+        );
+        await wait(700);
+        assert.ok(!getStdout().includes('BBB'), 'Debounced input must not reach the host');
+
+        // The window expired. B takes over as writer.
+        await pageB.keyboard.type('CCC');
+        assert.ok(
+            await waitUntil(() => getStdout().includes('CCC'), 5_000),
+            'Input must pass after the debounce window',
+        );
+
+        console.log(`  [T-21] Input debounce + lock indicator (${browserName}) ✓`);
+    } finally {
+        await browser.close();
+        await killHost(proc);
+    }
+}
+
 // ################ test registry and runner ################
 
 const BINARY_TESTS = [
@@ -790,6 +859,7 @@ const BROWSER_TESTS = [
     { name: 'T-18  Client identity',       fn: testClientIdentity },
     { name: 'T-19  Server exit broadcast', fn: testServerExitBroadcast },
     { name: 'T-20  Telemetry overlay',     fn: testTelemetryOverlay },
+    { name: 'T-21  Input debounce',        fn: testInputDebounce },
 ];
 
 // DOM-only tests from the previous session (no real WebRTC needed).

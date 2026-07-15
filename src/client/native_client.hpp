@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <memory>
+#include <chrono>
 #include <cstdint>
 #include "common/webrtc_session.hpp"
 #include "common/signaling_client.hpp"
@@ -24,11 +25,18 @@ public:
 private:
     void applyLocalWinch();
     void renderTelemetry();
+    void processOutput(std::string_view data);
 
     std::shared_ptr<SignalingClient> signalClient;
     std::shared_ptr<WebRTCSession> session;
     EventQueue eq;
+    std::string peers;
+    std::string lockedBy;
+    std::chrono::steady_clock::time_point lockedAt;
+    std::string outBuf;
+    bool inOsc = false;
     int winchFd = -1;
     bool running = false;
     uint16_t termRows = 0;
+    uint16_t termCols = 0;
 };

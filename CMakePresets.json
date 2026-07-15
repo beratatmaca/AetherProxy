@@ -8,59 +8,45 @@
   "configurePresets": [
     {
       "name": "debug",
-      "displayName": "Debug (GCC + ASan)",
+      "displayName": "Debug (ASan)",
       "description": "Debug build with AddressSanitizer",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-      },
-      "environment": {
-        "CC": "gcc",
-        "CXX": "g++"
       }
     },
     {
       "name": "tsan",
-      "displayName": "TSan (GCC)",
+      "displayName": "TSan",
       "description": "Debug build with ThreadSanitizer",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-tsan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Tsan",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-      },
-      "environment": {
-        "CC": "gcc",
-        "CXX": "g++"
       }
     },
     {
       "name": "release",
-      "displayName": "Release (GCC)",
+      "displayName": "Release",
       "description": "Optimized build for local use",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
-      },
-      "environment": {
-        "CC": "gcc",
-        "CXX": "g++"
       }
     },
     {
-      "name": "release-musl",
-      "displayName": "Release (musl static)",
-      "description": "Static distribution binary. Needs x86_64-linux-musl cross toolchain.",
+      "name": "release-static",
+      "displayName": "Release (static)",
+      "description": "Fully static binary. Run inside Alpine, gcc there is musl.",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build-release-musl",
+      "binaryDir": "${sourceDir}/build-release-static",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "STATIC_BUILD": "ON",
-        "CMAKE_C_COMPILER": "x86_64-linux-musl-gcc",
-        "CMAKE_CXX_COMPILER": "x86_64-linux-musl-g++"
+        "STATIC_BUILD": "ON"
       }
     }
   ],
@@ -78,8 +64,8 @@
       "configurePreset": "release"
     },
     {
-      "name": "release-musl",
-      "configurePreset": "release-musl"
+      "name": "release-static",
+      "configurePreset": "release-static"
     }
   ]
 }

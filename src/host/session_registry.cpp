@@ -28,14 +28,21 @@ void SessionRegistry::addClient(const std::string &id, const std::string &name, 
         return;
     }
     const std::string &color = COLORS[clients.size() % COLORS.size()];
-    Client client{id, name, color, perm, true, {24, 80}, chan, std::chrono::steady_clock::now()};
+    Client client{.id = id,
+                  .displayName = name,
+                  .color = color,
+                  .permission = perm,
+                  .active = true,
+                  .termSize = {.rows = 24, .cols = 80},
+                  .channel = chan,
+                  .lastActivity = std::chrono::steady_clock::now()};
     clients.push_back(client);
     applyLCDSize();
     broadcastPresence();
 }
 
 void SessionRegistry::removeClient(const std::string &id) {
-    clients.erase(std::remove_if(clients.begin(), clients.end(), [&](const Client &c) { return c.id == id; }), clients.end());
+    std::erase_if(clients, [&](const Client &c) { return c.id == id; });
     applyLCDSize();
     broadcastPresence();
 }
@@ -72,15 +79,45 @@ void SessionRegistry::broadcastControl(const std::string &msg) {
 }
 
 void SessionRegistry::handleInput(const std::string &id, std::string_view data, const std::function<void(std::string_view)> &onPtyWrite) {
+    constexpr long kDebounceMs = 500;
+    auto now = std::chrono::steady_clock::now();
     for (auto &client : clients) {
-        if (client.id == id) {
-            if (client.permission == Permission::Observer) {
+        if (client.id != id) {
+            continue;
+        }
+        if (client.permission == Permission::Observer) {
+            return;
+        }
+        if (id != writerId && !writerId.empty()) {
+            auto held = std::chrono::duration_cast<std::chrono::milliseconds>(now - writerAt).count();
+            auto writer = std::ranges::find_if(clients, [this](const Client &c) { return c.id == writerId; });
+            if (writer != clients.end() && held < kDebounceMs) {
+                notifyLocked(client, writer->displayName);
                 return;
             }
-            onPtyWrite(data);
-            updateActivity(id);
-            break;
         }
+        writerId = id;
+        writerAt = now;
+        onPtyWrite(data);
+        updateActivity(id);
+        break;
+    }
+}
+
+void SessionRegistry::notifyLocked(Client &client, const std::string &byName) {
+    constexpr long kNotifyIntervalMs = 1000;
+    auto now = std::chrono::steady_clock::now();
+    auto since = std::chrono::duration_cast<std::chrono::milliseconds>(now - client.lastLockNotify).count();
+    if (since < kNotifyIntervalMs) {
+        return;
+    }
+    client.lastLockNotify = now;
+    if (client.channel && client.channel->isOpen()) {
+        json msg = {{"type", "locked"}, {"by", byName}};
+        client.channel->send(std::string("\x00"
+                                         "AETHER:",
+                                         8) +
+                             msg.dump());
     }
 }
 
@@ -134,13 +171,13 @@ TermSize SessionRegistry::calcLCDSize() const {
         rows = std::min(rows, client.termSize.rows);
         cols = std::min(cols, client.termSize.cols);
     }
-    return {rows, cols};
+    return {.rows = rows, .cols = cols};
 }
 
 void SessionRegistry::applyLCDSize() {
     auto size = calcLCDSize();
     struct winsize ws {
-        size.rows, size.cols, 0, 0
+        .ws_row = size.rows, .ws_col = size.cols, .ws_xpixel = 0, .ws_ypixel = 0
     };
     if (pty != -1) {
         ioctl(pty, TIOCSWINSZ, &ws);

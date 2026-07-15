@@ -26,6 +26,7 @@ struct Client {
     TermSize termSize;
     std::shared_ptr<rtc::DataChannel> channel;
     std::chrono::steady_clock::time_point lastActivity;
+    std::chrono::steady_clock::time_point lastLockNotify;
 };
 
 /// Tracks active session peers.
@@ -68,9 +69,12 @@ private:
     TermSize calcLCDSize() const;
     void applyLCDSize();
     void broadcastPresence();
+    void notifyLocked(Client &client, const std::string &byName);
 
     std::vector<Client> clients;
     TermSize baseSize{24, 80};
+    std::string writerId;
+    std::chrono::steady_clock::time_point writerAt;
     int pty;
     int maxClients;
 };

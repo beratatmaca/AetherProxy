@@ -1,7 +1,7 @@
+#include <algorithm>
 #include <iostream>
 #include <unistd.h>
 #include <string_view>
-#include <algorithm>
 #include <vector>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
@@ -34,13 +34,13 @@
 enum class SessionMode : std::uint8_t { Terminal, Command, Pipe, Client, Interactive };
 
 bool hasFlag(const std::vector<std::string_view> &args, std::string_view flag) {
-    return std::find(args.begin(), args.end(), flag) != args.end();
+    return std::ranges::find(args, flag) != args.end();
 }
 
 static bool isVirtualInterface(const char *name) {
     static const std::vector<std::string_view> prefixes = {"docker", "br-", "veth", "virbr", "vmnet", "tun", "tap", "wg"};
     std::string_view n(name);
-    return std::ranges::any_of(prefixes, [&](std::string_view p) { return n.substr(0, p.size()) == p; });
+    return std::ranges::any_of(prefixes, [&](std::string_view p) { return n.starts_with(p); });
 }
 
 static std::string getLanIp() {
@@ -229,7 +229,7 @@ static int runInteractiveClient(const CLIConfig &config, const std::string &room
 int main(int argc, char *argv[]) {
     std::vector<std::string_view> args(argv + 1, argv + argc);
 
-    auto delim = std::find(args.begin(), args.end(), "--");
+    auto delim = std::ranges::find(args, "--");
     std::vector<std::string_view> ownArgs(args.begin(), delim);
     bool wantHelp = hasFlag(ownArgs, "--help") || hasFlag(ownArgs, "-h") || (!args.empty() && args[0] == "help");
     if (wantHelp) {
@@ -349,10 +349,10 @@ int main(int argc, char *argv[]) {
                 auto session = std::make_shared<WebRTCSession>();
                 session->initialize(config.stunServers, config.turnServers, config.turnUser, config.turnPass, config.noStun, config.noTurn);
                 session->onOpen(
-                    [&eq, clientId, name, session]() { eq.push(Event{Event::Type::Join, clientId, name, "", session->getChannel()}); });
+                    [&eq, clientId, name, session]() { eq.push(Event{.type=Event::Type::Join, .clientId=clientId, .clientName=name, .data="", .channel=session->getChannel()}); });
                 session->onMessage(
-                    [&eq, clientId](std::string msg) { eq.push(Event{Event::Type::Message, clientId, "", std::move(msg), nullptr}); });
-                session->onDisconnect([&eq, clientId]() { eq.push(Event{Event::Type::Disconnect, clientId, "", "", nullptr}); });
+                    [&eq, clientId](std::string msg) { eq.push(Event{.type=Event::Type::Message, .clientId=clientId, .clientName="", .data=std::move(msg), .channel=nullptr}); });
+                session->onDisconnect([&eq, clientId]() { eq.push(Event{.type=Event::Type::Disconnect, .clientId=clientId, .clientName="", .data="", .channel=nullptr}); });
                 sessions[clientId] = session;
                 return session->createOffer();
             },
@@ -396,10 +396,10 @@ int main(int argc, char *argv[]) {
                 auto session = std::make_shared<WebRTCSession>();
                 session->initialize(config.stunServers, config.turnServers, config.turnUser, config.turnPass, config.noStun, config.noTurn);
                 session->onOpen(
-                    [&eq, clientId, name, session]() { eq.push(Event{Event::Type::Join, clientId, name, "", session->getChannel()}); });
+                    [&eq, clientId, name, session]() { eq.push(Event{.type=Event::Type::Join, .clientId=clientId, .clientName=name, .data="", .channel=session->getChannel()}); });
                 session->onMessage(
-                    [&eq, clientId](std::string msg) { eq.push(Event{Event::Type::Message, clientId, "", std::move(msg), nullptr}); });
-                session->onDisconnect([&eq, clientId]() { eq.push(Event{Event::Type::Disconnect, clientId, "", "", nullptr}); });
+                    [&eq, clientId](std::string msg) { eq.push(Event{.type=Event::Type::Message, .clientId=clientId, .clientName="", .data=std::move(msg), .channel=nullptr}); });
+                session->onDisconnect([&eq, clientId]() { eq.push(Event{.type=Event::Type::Disconnect, .clientId=clientId, .clientName="", .data="", .channel=nullptr}); });
                 sessions[clientId] = session;
 
                 std::string offer = session->createOffer();
@@ -454,7 +454,7 @@ int main(int argc, char *argv[]) {
     if (localTty) {
         struct winsize hostWs {};
         if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &hostWs) == 0) {
-            registry.setBaseSize({hostWs.ws_row, hostWs.ws_col});
+            registry.setBaseSize({.rows=hostWs.ws_row, .cols=hostWs.ws_col});
         }
         winchFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
         host_winch_fd = winchFd;
@@ -513,7 +513,7 @@ int main(int argc, char *argv[]) {
                 (void)r;
                 struct winsize hostWs {};
                 if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &hostWs) == 0) {
-                    registry.setBaseSize({hostWs.ws_row, hostWs.ws_col});
+                    registry.setBaseSize({.rows=hostWs.ws_row, .cols=hostWs.ws_col});
                 }
             } else if (events[i].data.fd == eq.getFd()) {
                 uint64_t val = 0;
@@ -563,7 +563,7 @@ int main(int argc, char *argv[]) {
                                 if (payload.contains("type") && payload["type"] == "resize") {
                                     uint16_t r = payload["rows"];
                                     uint16_t c = payload["cols"];
-                                    registry.updateClientSize(evItem.clientId, {r, c});
+                                    registry.updateClientSize(evItem.clientId, {.rows=r, .cols=c});
                                 } else if (payload.contains("type") && payload["type"] == "bye") {
                                     registry.removeClient(evItem.clientId);
                                     std::lock_guard<std::mutex> lock(sessionsMutex);

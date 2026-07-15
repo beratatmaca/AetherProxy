@@ -25,6 +25,97 @@ static void writeAllOut(std::string_view data) {
     }
 }
 
+static std::string base64Decode(std::string_view in) {
+    auto val = [](unsigned char c) -> int {
+        if (c >= 'A' && c <= 'Z') {
+            return c - 'A';
+        }
+        if (c >= 'a' && c <= 'z') {
+            return c - 'a' + 26;
+        }
+        if (c >= '0' && c <= '9') {
+            return c - '0' + 52;
+        }
+        if (c == '+') {
+            return 62;
+        }
+        if (c == '/') {
+            return 63;
+        }
+        return -1;
+    };
+    std::string out;
+    unsigned int buf = 0;
+    int bits = 0;
+    for (unsigned char c : in) {
+        int v = val(c);
+        if (v < 0) {
+            continue;
+        }
+        buf = (buf << 6U) | static_cast<unsigned int>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<char>((buf >> static_cast<unsigned int>(bits)) & 0xFFU));
+        }
+    }
+    return out;
+}
+
+static void copyToClipboard(const std::string &text) {
+    const char *cmd = nullptr;
+    if (std::getenv("WAYLAND_DISPLAY") != nullptr) {
+        cmd = "wl-copy 2>/dev/null";
+    } else if (std::getenv("DISPLAY") != nullptr) {
+        cmd = "xclip -selection clipboard -in 2>/dev/null";
+    }
+    if (cmd == nullptr) {
+        return;
+    }
+    FILE *pipe = popen(cmd, "w");
+    if (pipe == nullptr) {
+        return;
+    }
+    fwrite(text.data(), 1, text.size(), pipe);
+    pclose(pipe);
+}
+
+static void handleOsc52(std::string_view seq) {
+    size_t payloadStart = seq.find(';', 5);
+    if (payloadStart == std::string_view::npos) {
+        return;
+    }
+    ++payloadStart;
+    size_t payloadEnd = seq.size();
+    if (seq.ends_with('\x07')) {
+        payloadEnd -= 1;
+    } else if (seq.ends_with("\033\\")) {
+        payloadEnd -= 2;
+    }
+    if (payloadEnd <= payloadStart) {
+        return;
+    }
+    std::string_view payload = seq.substr(payloadStart, payloadEnd - payloadStart);
+    if (payload == "?") {
+        return;
+    }
+    std::string decoded = base64Decode(payload);
+    if (!decoded.empty()) {
+        copyToClipboard(decoded);
+    }
+}
+
+static size_t partialOscPrefixLen(std::string_view buf) {
+    static constexpr std::string_view kPrefix = "\033]52;";
+    size_t maxLen = std::min(buf.size(), kPrefix.size() - 1);
+    for (size_t len = maxLen; len > 0; --len) {
+        if (buf.substr(buf.size() - len) == kPrefix.substr(0, len)) {
+            return len;
+        }
+    }
+    return 0;
+}
+
 static int global_winch_fd = -1;
 
 void handleSigwinch(int) {
@@ -94,15 +185,18 @@ void NativeClient::connect(const std::string &signalingUrl, const std::string &r
                 return;
             }
             std::cerr << "Connection rejected: " << message << "\n" << std::flush;
-            eq.push(Event{Event::Type::Disconnect, "", "", "", nullptr});
+            eq.push(Event{.type = Event::Type::Disconnect, .clientId = "", .clientName = "", .data = "", .channel = nullptr});
         }
     });
 
     session->onOpen([this]() { handleSigwinch(0); });
 
-    session->onMessage([this](std::string msg) { eq.push(Event{Event::Type::Message, "", "", std::move(msg), nullptr}); });
+    session->onMessage([this](std::string msg) {
+        eq.push(Event{.type = Event::Type::Message, .clientId = "", .clientName = "", .data = std::move(msg), .channel = nullptr});
+    });
 
-    session->onDisconnect([this]() { eq.push(Event{Event::Type::Disconnect, "", "", "", nullptr}); });
+    session->onDisconnect(
+        [this]() { eq.push(Event{.type = Event::Type::Disconnect, .clientId = "", .clientName = "", .data = "", .channel = nullptr}); });
 
     signalClient->onOpen([this, clientId]() {
         json helloMsg = {{"clientId", clientId}, {"name", localUserName()}};
@@ -121,6 +215,7 @@ void NativeClient::applyLocalWinch() {
         return;
     }
     termRows = ws.ws_row;
+    termCols = ws.ws_col;
     uint16_t remoteRows = ws.ws_row;
     if (termRows >= 2) {
         std::ostringstream region;
@@ -139,14 +234,77 @@ void NativeClient::renderTelemetry() {
     if (termRows < 2) {
         return;
     }
-    std::ostringstream line;
-    line << "\0337\033[" << termRows << ";1H\033[2K\033[2m[AetherProxy] " << session->stateString();
+    std::ostringstream text;
+    text << "[AetherProxy] " << session->stateString();
     long rtt = session->rttMillis();
     if (rtt >= 0) {
-        line << " · rtt " << rtt << " ms";
+        text << " · rtt " << rtt << " ms";
     }
-    line << "\033[22m\0338";
+    if (!peers.empty()) {
+        text << " · " << peers;
+    }
+    if (!lockedBy.empty()) {
+        auto held = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - lockedAt).count();
+        if (held < 1500) {
+            text << " · ✋ " << lockedBy;
+        } else {
+            lockedBy.clear();
+        }
+    }
+    std::string t = text.str();
+    if (termCols > 1 && t.size() > static_cast<size_t>(termCols) - 1) {
+        size_t cut = static_cast<size_t>(termCols) - 1;
+        while (cut > 0 && (static_cast<unsigned char>(t[cut]) & 0xC0U) == 0x80U) {
+            --cut;
+        }
+        t.resize(cut);
+    }
+    std::ostringstream line;
+    line << "\0337\033[" << termRows << ";1H\033[2K\033[2m" << t << "\033[22m\0338";
     writeAllOut(line.str());
+}
+
+void NativeClient::processOutput(std::string_view data) {
+    constexpr size_t kOscMax = 1U << 17U;
+    outBuf.append(data);
+    std::string flush;
+    while (!outBuf.empty()) {
+        if (!inOsc) {
+            size_t esc = outBuf.find("\033]52;");
+            if (esc == std::string::npos) {
+                size_t keep = partialOscPrefixLen(outBuf);
+                flush += outBuf.substr(0, outBuf.size() - keep);
+                outBuf.erase(0, outBuf.size() - keep);
+                break;
+            }
+            flush += outBuf.substr(0, esc);
+            outBuf.erase(0, esc);
+            inOsc = true;
+        } else {
+            size_t bel = outBuf.find('\x07');
+            size_t st = outBuf.find("\033\\", 1);
+            size_t seqEnd = std::string::npos;
+            if (bel != std::string::npos && (st == std::string::npos || bel < st)) {
+                seqEnd = bel + 1;
+            } else if (st != std::string::npos) {
+                seqEnd = st + 2;
+            }
+            if (seqEnd == std::string::npos) {
+                if (outBuf.size() > kOscMax) {
+                    flush += outBuf;
+                    outBuf.clear();
+                    inOsc = false;
+                }
+                break;
+            }
+            handleOsc52(std::string_view(outBuf).substr(0, seqEnd));
+            outBuf.erase(0, seqEnd);
+            inOsc = false;
+        }
+    }
+    if (!flush.empty()) {
+        writeAllOut(flush);
+    }
 }
 
 void NativeClient::run() {
@@ -163,7 +321,7 @@ void NativeClient::run() {
 
         int maxFd = std::max(STDIN_FILENO, std::max(eq.getFd(), winchFd));
         struct timeval tv {
-            0, 100000
+            .tv_sec = 0, .tv_usec = 100000
         };
         int ret = select(maxFd + 1, &fds, nullptr, nullptr, &tv);
 
@@ -216,11 +374,34 @@ void NativeClient::run() {
                                 running = false;
                                 break;
                             }
+                            if (type == "locked") {
+                                lockedBy = payload.value("by", "");
+                                lockedAt = std::chrono::steady_clock::now();
+                                renderTelemetry();
+                            }
+                            if (type == "presence") {
+                                std::string line;
+                                for (const auto &c : payload.value("clients", json::array())) {
+                                    if (!c.is_object()) {
+                                        continue;
+                                    }
+                                    if (!line.empty()) {
+                                        line += " ";
+                                    }
+                                    line += c.value("displayName", "");
+                                    if (c.value("active", false)) {
+                                        line += "*";
+                                    }
+                                }
+                                peers = line;
+                                renderTelemetry();
+                            }
                         } catch (...) {
+                            continue;
                         }
                         continue;
                     }
-                    writeAllOut(msg);
+                    processOutput(msg);
                 }
             }
         }
