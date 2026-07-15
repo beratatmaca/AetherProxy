@@ -1,6 +1,6 @@
 #include "client/native_client.hpp"
+#include "common/raw_tty.hpp"
 #include <unistd.h>
-#include <termios.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/eventfd.h>
@@ -12,84 +12,80 @@
 
 using json = nlohmann::json;
 
-static struct termios orig_termios;
-static bool raw_mode_active = false;
 static int global_winch_fd = -1;
-
-void disableRawMode() {
-    if (raw_mode_active) {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
-        raw_mode_active = false;
-    }
-}
-
-void enableRawMode() {
-    if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) return;
-    struct termios raw = orig_termios;
-    cfmakeraw(&raw);
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != -1) {
-        raw_mode_active = true;
-        std::atexit(disableRawMode);
-    }
-}
 
 void handleSigwinch(int) {
     if (global_winch_fd != -1) {
         uint64_t val = 1;
-        write(global_winch_fd, &val, sizeof(val));
+        ssize_t r = write(global_winch_fd, &val, sizeof(val));
+        (void)r;
     }
 }
 
-NativeClient::NativeClient() : signalClient(std::make_shared<SignalingClient>()), session(std::make_shared<WebRTCSession>()), winchFd(-1), running(false) {
+NativeClient::NativeClient() : signalClient(std::make_shared<SignalingClient>()), session(std::make_shared<WebRTCSession>()) {
     winchFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     global_winch_fd = winchFd;
 }
 
 NativeClient::~NativeClient() {
-    disableRawMode();
+    disableRawTty();
     if (winchFd != -1) {
         close(winchFd);
     }
 }
 
-void NativeClient::connect(const std::string& signalingUrl, const std::string& roomCode) {
-    session->initialize({}, {}, "", "", false, false);
+void NativeClient::connect(const std::string &signalingUrl, const std::string &roomCode) {
+    session->initialize({}, {}, "", "", false, false, false);
 
     std::ostringstream idStream;
     idStream << "nc-" << std::hex << reinterpret_cast<uintptr_t>(this);
     const std::string clientId = idStream.str();
 
-    signalClient->onMessage([this, clientId](std::string type, std::string data) {
-        if (type == "answer") {
+    signalClient->onMessage([this, clientId](const std::string &type, const std::string &data) {
+        if (type == "offer") {
+            std::string target;
             std::string sdp;
             try {
                 auto j = nlohmann::json::parse(data);
+                target = j.value("clientId", "");
                 sdp = j.value("sdp", "");
             } catch (...) {
-                sdp = data;
+                return;
             }
-            if (!sdp.empty()) {
-                session->setAnswer(sdp);
+            if (target != clientId || sdp.empty()) {
+                return;
             }
+            session->setOffer(sdp);
+            std::string answer = session->createAnswer();
+            json resp = {{"clientId", clientId}, {"sdp", answer}};
+            signalClient->send("answer", resp.dump());
+        } else if (type == "error") {
+            std::string target;
+            std::string message;
+            try {
+                auto j = nlohmann::json::parse(data);
+                target = j.value("clientId", "");
+                message = j.value("message", "");
+            } catch (...) {
+                return;
+            }
+            if (!target.empty() && target != clientId) {
+                return;
+            }
+            std::cerr << "Connection rejected: " << message << "\n" << std::flush;
+            eq.push(Event{Event::Type::Disconnect, "", "", "", nullptr});
         }
     });
 
-    session->onOpen([this]() {
-        handleSigwinch(0);
-    });
+    session->onOpen([this]() { handleSigwinch(0); });
 
-    session->onMessage([this](std::string msg) {
-        eq.push(Event{Event::Type::Message, "", "", msg, nullptr});
-    });
+    session->onMessage([this](std::string msg) { eq.push(Event{Event::Type::Message, "", "", std::move(msg), nullptr}); });
 
-    session->onDisconnect([this]() {
-        eq.push(Event{Event::Type::Disconnect, "", "", "", nullptr});
-    });
+    session->onDisconnect([this]() { eq.push(Event{Event::Type::Disconnect, "", "", "", nullptr}); });
 
     signalClient->onOpen([this, clientId]() {
-        std::string offerSdp = session->createOffer();
-        json offerMsg = {{"clientId", clientId}, {"sdp", offerSdp}};
-        signalClient->send("offer", offerMsg.dump());
+        json helloMsg = {{"clientId", clientId}};
+        signalClient->send("hello", helloMsg.dump());
     });
 
     signalClient->connect(signalingUrl, roomCode);
@@ -110,7 +106,9 @@ void NativeClient::run() {
         FD_SET(winchFd, &fds);
 
         int maxFd = std::max(STDIN_FILENO, std::max(eq.getFd(), winchFd));
-        struct timeval tv{0, 100000};
+        struct timeval tv {
+            0, 100000
+        };
         int ret = select(maxFd + 1, &fds, nullptr, nullptr, &tv);
 
         if (ret > 0) {
@@ -126,15 +124,15 @@ void NativeClient::run() {
 
             if (FD_ISSET(winchFd, &fds)) {
                 uint64_t val = 0;
-                read(winchFd, &val, sizeof(val));
-                struct winsize ws{};
+                ssize_t r = read(winchFd, &val, sizeof(val));
+                (void)r;
+                struct winsize ws {};
                 if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) != -1) {
-                    json msg = {
-                        {"type", "resize"},
-                        {"rows", ws.ws_row},
-                        {"cols", ws.ws_col}
-                    };
-                    session->send(std::string("\x00" "AETHER:", 8) + msg.dump());
+                    json msg = {{"type", "resize"}, {"rows", ws.ws_row}, {"cols", ws.ws_col}};
+                    session->send(std::string("\x00"
+                                              "AETHER:",
+                                              8) +
+                                  msg.dump());
                 }
             }
 
@@ -151,10 +149,19 @@ void NativeClient::run() {
                         break;
                     }
                     std::string msg = std::move(ev.data);
-                    if (msg.compare(0, 8, std::string("\x00" "AETHER:", 8)) == 0) {
+                    if (msg.compare(0, 8,
+                                    std::string("\x00"
+                                                "AETHER:",
+                                                8)) == 0) {
                         continue;
                     }
-                    write(STDOUT_FILENO, msg.data(), msg.size());
+                    size_t sent = 0;
+                    while (sent < msg.size()) {
+                        ssize_t w = write(STDOUT_FILENO, msg.data() + sent, msg.size() - sent);
+                        if (w <= 0)
+                            break;
+                        sent += static_cast<size_t>(w);
+                    }
                 }
             }
         }

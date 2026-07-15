@@ -23,7 +23,15 @@ struct CLIConfig {
     uint16_t port = 8080;
     /// Optional WebSocket signaling server URL (enables internet mode).
     std::string signalingUrl;
+    /// Seconds without clients before shutdown. Zero disables.
+    int idleTimeout = 3600;
 };
 
-/// Parses configuration parameters.
-CLIConfig parseCLIArgs(int argc, char* argv[]);
+/// Parses config file then command line flags.
+CLIConfig parseCLIArgs(int argc, char *argv[]);
+
+/// Prints CLI usage text.
+void printUsage();
+
+/// Returns the build version string.
+std::string versionString();

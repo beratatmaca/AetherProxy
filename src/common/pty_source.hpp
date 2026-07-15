@@ -9,16 +9,16 @@
 class PTYSource : public IOSource {
 public:
     /// Creates a PTY source with custom command.
-    PTYSource(const std::vector<std::string>& cmd = {});
+    PTYSource(const std::vector<std::string> &cmd = {});
 
     /// Cleans up the descriptors.
     ~PTYSource() override;
 
     /// Reads data from PTY.
-    ssize_t read(char* buf, size_t len) override;
+    ssize_t read(char *buf, size_t len) override;
 
     /// Writes data to PTY.
-    ssize_t write(const char* buf, size_t len) override;
+    ssize_t write(const char *buf, size_t len) override;
 
     /// Returns false.
     bool isReadOnly() const override;
@@ -27,12 +27,12 @@ public:
     winsize getSize() const;
 
     /// Sets terminal window size.
-    void setSize(winsize ws);
+    void setSize(winsize ws) const;
 
     /// Gets master fd.
     int getFd() const override;
 
 private:
-    int masterFd;
-    int childPid;
+    int masterFd = -1;
+    int childPid = -1;
 };

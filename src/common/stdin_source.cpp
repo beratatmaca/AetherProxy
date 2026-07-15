@@ -9,11 +9,11 @@ StdinSource::StdinSource() {
     }
 }
 
-ssize_t StdinSource::read(char* buf, size_t len) {
+ssize_t StdinSource::read(char *buf, size_t len) {
     return ::read(STDIN_FILENO, buf, len);
 }
 
-ssize_t StdinSource::write(const char*, size_t) {
+ssize_t StdinSource::write(const char *, size_t) {
     return -1;
 }
 

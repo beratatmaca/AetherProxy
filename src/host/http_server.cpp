@@ -7,7 +7,18 @@
 #include <iostream>
 #include <cstring>
 
-HttpServer::HttpServer() : serverFd(-1), running(false) {}
+static void writeAll(int fd, const char *data, size_t len) {
+    size_t sent = 0;
+    while (sent < len) {
+        ssize_t n = write(fd, data + sent, len - sent);
+        if (n <= 0) {
+            return;
+        }
+        sent += static_cast<size_t>(n);
+    }
+}
+
+HttpServer::HttpServer() = default;
 
 HttpServer::~HttpServer() {
     stop();
@@ -21,9 +32,8 @@ void HttpServer::stop() {
     }
 }
 
-void HttpServer::start(uint16_t port,
-                       std::function<std::string(std::string)> getOffer,
-                       std::function<void(std::string, std::string)> onAnswerReceived) {
+void HttpServer::start(uint16_t port, const std::function<std::string(std::string)> &getOffer,
+                       const std::function<void(std::string, std::string)> &onAnswerReceived) {
     serverFd = socket(AF_INET, SOCK_STREAM, 0);
     if (serverFd == -1) {
         return;
@@ -37,7 +47,7 @@ void HttpServer::start(uint16_t port,
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(port);
 
-    if (bind(serverFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    if (bind(serverFd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(serverFd);
         serverFd = -1;
         return;
@@ -53,7 +63,8 @@ void HttpServer::start(uint16_t port,
     while (running) {
         int clientFd = accept(serverFd, nullptr, nullptr);
         if (clientFd < 0) {
-            if (!running) break;
+            if (!running)
+                break;
             continue;
         }
 
@@ -70,47 +81,56 @@ void HttpServer::start(uint16_t port,
         if (request.find("GET / ") != std::string::npos) {
             std::string content(INDEX_HTML.begin(), INDEX_HTML.end());
             std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: "
-                << content.size() << "\r\nConnection: close\r\n\r\n" << content;
+            oss << "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: " << content.size() << "\r\nConnection: close\r\n\r\n"
+                << content;
             response = oss.str();
         } else if (request.find("GET /offer") != std::string::npos) {
             size_t idPos = request.find("id=");
             std::string clientId = "client-unknown";
             if (idPos != std::string::npos) {
-                size_t spacePos = request.find(" ", idPos);
-                size_t ampPos = request.find("&", idPos);
+                size_t spacePos = request.find(' ', idPos);
+                size_t ampPos = request.find('&', idPos);
                 size_t endPos = std::min(spacePos, ampPos);
                 clientId = request.substr(idPos + 3, endPos - (idPos + 3));
             }
             std::string offer = getOffer(clientId);
             std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
-                << offer.size() << "\r\nConnection: close\r\n\r\n" << offer;
+            if (offer.empty()) {
+                static const std::string full = "session full";
+                oss << "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: " << full.size()
+                    << "\r\nConnection: close\r\n\r\n"
+                    << full;
+            } else {
+                oss << "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " << offer.size() << "\r\nConnection: close\r\n\r\n"
+                    << offer;
+            }
             response = oss.str();
         } else if (request.find("GET /xterm.js") != std::string::npos) {
             std::string content(XTERM_JS.begin(), XTERM_JS.end());
             std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: "
-                << content.size() << "\r\nConnection: close\r\n\r\n" << content;
+            oss << "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: " << content.size()
+                << "\r\nConnection: close\r\n\r\n"
+                << content;
             response = oss.str();
         } else if (request.find("GET /xterm.css") != std::string::npos) {
             std::string content(XTERM_CSS.begin(), XTERM_CSS.end());
             std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: "
-                << content.size() << "\r\nConnection: close\r\n\r\n" << content;
+            oss << "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nContent-Length: " << content.size() << "\r\nConnection: close\r\n\r\n"
+                << content;
             response = oss.str();
         } else if (request.find("GET /xterm-addon-fit.js") != std::string::npos) {
             std::string content(XTERM_ADDON_FIT_JS.begin(), XTERM_ADDON_FIT_JS.end());
             std::ostringstream oss;
-            oss << "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: "
-                << content.size() << "\r\nConnection: close\r\n\r\n" << content;
+            oss << "HTTP/1.1 200 OK\r\nContent-Type: application/javascript\r\nContent-Length: " << content.size()
+                << "\r\nConnection: close\r\n\r\n"
+                << content;
             response = oss.str();
         } else if (request.find("POST /answer") != std::string::npos) {
             size_t idPos = request.find("id=");
             std::string clientId = "client-unknown";
             if (idPos != std::string::npos) {
-                size_t spacePos = request.find(" ", idPos);
-                size_t ampPos = request.find("&", idPos);
+                size_t spacePos = request.find(' ', idPos);
+                size_t ampPos = request.find('&', idPos);
                 size_t endPos = std::min(spacePos, ampPos);
                 clientId = request.substr(idPos + 3, endPos - (idPos + 3));
             }
@@ -120,13 +140,12 @@ void HttpServer::start(uint16_t port,
             if (clPos != std::string::npos) {
                 size_t endLine = request.find("\r\n", clPos);
                 std::string clVal = request.substr(clPos + 15, endLine - (clPos + 15));
-                // Trim leading whitespace that RFC 7230 permits after the colon.
                 size_t first = clVal.find_first_not_of(" \t");
                 try {
                     contentLength = (first != std::string::npos) ? std::stoul(clVal.substr(first)) : 0;
-                } catch (const std::exception&) {
-                    const char* bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                    write(clientFd, bad, std::strlen(bad));
+                } catch (const std::exception &) {
+                    const char *bad = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    writeAll(clientFd, bad, std::strlen(bad));
                     close(clientFd);
                     continue;
                 }
@@ -138,12 +157,13 @@ void HttpServer::start(uint16_t port,
             while (body.size() < contentLength) {
                 char readBuf[1024] = {0};
                 ssize_t n = read(clientFd, readBuf, sizeof(readBuf) - 1);
-                if (n <= 0) break;
+                if (n <= 0)
+                    break;
                 body.append(readBuf, n);
             }
             std::string sdpAnswer = body;
             response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-            write(clientFd, response.data(), response.size());
+            writeAll(clientFd, response.data(), response.size());
             close(clientFd);
             onAnswerReceived(clientId, sdpAnswer);
             continue;
@@ -152,7 +172,7 @@ void HttpServer::start(uint16_t port,
         }
 
         if (!response.empty()) {
-            write(clientFd, response.data(), response.size());
+            writeAll(clientFd, response.data(), response.size());
         }
         close(clientFd);
     }

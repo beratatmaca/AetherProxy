@@ -3,6 +3,7 @@ project(AetherProxy LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Include FetchContent for dependencies
 include(FetchContent)
@@ -16,6 +17,9 @@ FetchContent_Declare(
 )
 set(NO_WEBSOCKETS OFF CACHE INTERNAL "")
 set(NO_TESTS ON CACHE INTERNAL "")
+set(NO_MEDIA ON CACHE INTERNAL "")
+set(NO_EXAMPLES ON CACHE INTERNAL "")
+set(BUILD_TESTING OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(datachannel)
 
 # Fetch libqrencode
@@ -25,6 +29,9 @@ FetchContent_Declare(
     GIT_TAG v4.1.1
     GIT_SHALLOW TRUE
 )
+set(WITH_TOOLS OFF CACHE INTERNAL "")
+set(WITH_TESTS OFF CACHE INTERNAL "")
+set(WITHOUT_PNG ON CACHE INTERNAL "")
 FetchContent_MakeAvailable(qrencode)
 
 # libdatachannel already vendors and exports nlohmann_json
@@ -45,6 +52,8 @@ add_executable(aetherproxy
     src/common/event_queue.cpp
     src/common/room_code.cpp
     src/common/qr_code.cpp
+    src/common/banner.cpp
+    src/common/raw_tty.cpp
     src/common/signaling_client.cpp
     src/common/webrtc_session.cpp
     src/host/http_server.cpp
@@ -52,6 +61,10 @@ add_executable(aetherproxy
     src/client/native_client.cpp
     src/common/config.cpp
 )
+
+file(READ ${CMAKE_CURRENT_SOURCE_DIR}/VERSION AETHER_VERSION)
+string(STRIP "${AETHER_VERSION}" AETHER_VERSION)
+target_compile_definitions(aetherproxy PRIVATE AETHER_VERSION="${AETHER_VERSION}")
 
 target_include_directories(aetherproxy PRIVATE src ${qrencode_SOURCE_DIR})
 
@@ -85,3 +98,67 @@ if(STATIC_BUILD)
     set(BUILD_SHARED_LIBS OFF)
     target_link_options(aetherproxy PRIVATE -static)
 endif()
+
+# ################ developer tool targets ################
+
+file(GLOB_RECURSE AETHER_ALL_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp
+)
+list(REMOVE_ITEM AETHER_ALL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/common/embedded_assets.hpp)
+file(GLOB_RECURSE AETHER_CPP_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
+
+# Format sources in place
+find_program(CLANG_FORMAT_BIN clang-format)
+if(CLANG_FORMAT_BIN)
+    add_custom_target(format
+        COMMAND ${CLANG_FORMAT_BIN} -i ${AETHER_ALL_SOURCES}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Formatting sources with clang-format"
+    )
+endif()
+
+# Static analysis via compile_commands.json
+find_program(CLANG_TIDY_BIN clang-tidy)
+if(CLANG_TIDY_BIN)
+    add_custom_target(lint
+        COMMAND ${CLANG_TIDY_BIN} -p ${CMAKE_BINARY_DIR} ${AETHER_CPP_SOURCES}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Linting sources with clang-tidy"
+    )
+endif()
+
+# API docs from doxygen header comments
+find_package(Doxygen QUIET)
+if(DOXYGEN_FOUND)
+    set(DOXYGEN_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/docs)
+    set(DOXYGEN_EXCLUDE_PATTERNS embedded_assets.hpp)
+    set(DOXYGEN_EXTRACT_ALL YES)
+    set(DOXYGEN_GENERATE_LATEX NO)
+    doxygen_add_docs(docs
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        COMMENT "Generating API docs with Doxygen"
+    )
+endif()
+
+# Dispatch CI on GitHub Actions
+find_program(GH_BIN gh)
+if(GH_BIN)
+    add_custom_target(ci
+        COMMAND ${GH_BIN} workflow run ci.yml
+        COMMAND ${CMAKE_COMMAND} -E echo "CI dispatched. Watch with: gh run watch"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        USES_TERMINAL
+        COMMENT "Dispatching GitHub Actions CI workflow"
+    )
+endif()
+
+# Playwright integration suite
+add_custom_target(run-tests
+    COMMAND ${CMAKE_COMMAND} -E env BINARY=$<TARGET_FILE:aetherproxy>
+            bash ${CMAKE_CURRENT_SOURCE_DIR}/tools/run-tests.sh
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    USES_TERMINAL
+    COMMENT "Running integration tests"
+)
+add_dependencies(run-tests aetherproxy)

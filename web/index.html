@@ -173,7 +173,7 @@
             <div id="peers-bar"></div>
             <div id="mode-badge">
                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                Pipe Mode · Read Only
+                <span id="mode-badge-text">Pipe Mode · Read Only</span>
             </div>
             <div class="status" id="status-display">
                 <span class="status-dot" id="status-dot"></span>
@@ -207,14 +207,36 @@
         // Session state — exposed on window for Playwright introspection.
         window.isPipeMode = false;
         let isPipeMode = false;
+        let sessionMode = 'terminal';
+        let isObserver = false;
         let ctrlActive = false;
         let altActive = false;
+
+        const badgeText = document.getElementById('mode-badge-text');
+
+        function inputLocked() {
+            return isPipeMode || isObserver;
+        }
+
+        function refreshBadge() {
+            let label = '';
+            if (isPipeMode) label = 'Pipe Mode · Read Only';
+            else if (isObserver) label = 'Observer · Read Only';
+            else if (sessionMode === 'collab') label = 'Collab';
+            if (label) badgeText.textContent = label;
+            modeBadge.classList.toggle('visible', label !== '');
+            termContainer.classList.toggle('pipe-locked', inputLocked());
+        }
 
         function setPipeMode(val) {
             isPipeMode = val;
             window.isPipeMode = val;
-            modeBadge.classList.toggle('visible', val);
-            termContainer.classList.toggle('pipe-locked', val);
+            refreshBadge();
+        }
+
+        function setSessionMode(mode) {
+            sessionMode = mode;
+            setPipeMode(mode === 'pipe');
         }
 
         function updateStatus(text, active) {
@@ -332,11 +354,14 @@
                                 pill.appendChild(document.createTextNode(label));
                                 peersBar.appendChild(pill);
                             });
+                            const me = (payload.clients || []).find(c => c.id === clientId);
+                            isObserver = !!(me && me.permission === 'observer');
+                            refreshBadge();
                         } else if (payload.type === 'eof') {
                             updateStatus('Session ended (EOF)', false);
                             setPipeMode(true); // lock input on EOF too
                         } else if (payload.type === 'mode') {
-                            setPipeMode(payload.mode === 'pipe');
+                            setSessionMode(payload.mode);
                         }
                     } catch (err) {
                         console.error('Control frame parse error:', err);
@@ -358,15 +383,20 @@
         };
 
         fetch('/offer?id=' + clientId)
-            .then(res => res.text())
+            .then(res => {
+                if (!res.ok) {
+                    throw new Error(res.status === 503 ? 'Session full' : 'Offer request failed');
+                }
+                return res.text();
+            })
             .then(sdp => pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp })))
             .then(() => pc.createAnswer())
             .then(answer => pc.setLocalDescription(answer))
             .catch(err => updateStatus('Error: ' + err.message, false));
 
-        // Keyboard input — blocked in pipe mode
+        // Keyboard input — blocked for pipe viewers and observers
         term.onData((data) => {
-            if (isPipeMode) return;
+            if (inputLocked()) return;
             if (dc && dc.readyState === 'open') {
                 dc.send(applyModifiers(data));
             }
@@ -374,17 +404,17 @@
 
         // Toolbar: Ctrl/Alt toggle modifier state; others send keys directly
         const sendKey = (key) => {
-            if (isPipeMode) return;
+            if (inputLocked()) return;
             if (dc && dc.readyState === 'open') dc.send(key);
         };
 
         document.getElementById('btn-ctrl').onclick = () => {
-            if (isPipeMode) return;
+            if (inputLocked()) return;
             ctrlActive = !ctrlActive;
             updateModifierButtons();
         };
         document.getElementById('btn-alt').onclick = () => {
-            if (isPipeMode) return;
+            if (inputLocked()) return;
             altActive = !altActive;
             updateModifierButtons();
         };

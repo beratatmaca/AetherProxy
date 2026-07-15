@@ -5,8 +5,10 @@
 #include <cstdlib>
 #include <fcntl.h>
 
-PTYSource::PTYSource(const std::vector<std::string>& cmd) : masterFd(-1), childPid(-1) {
-    struct winsize ws{24, 80, 0, 0};
+PTYSource::PTYSource(const std::vector<std::string> &cmd) {
+    struct winsize ws {
+        24, 80, 0, 0
+    };
     if (isatty(STDIN_FILENO)) {
         ioctl(STDIN_FILENO, TIOCGWINSZ, &ws);
     }
@@ -15,14 +17,15 @@ PTYSource::PTYSource(const std::vector<std::string>& cmd) : masterFd(-1), childP
     pid_t pid = forkpty(&master, nullptr, nullptr, &ws);
     if (pid == 0) {
         if (!cmd.empty()) {
-            std::vector<char*> execArgs;
-            for (const auto& arg : cmd) {
-                execArgs.push_back(const_cast<char*>(arg.c_str()));
+            std::vector<char *> execArgs;
+            execArgs.reserve(cmd.size() + 1);
+            for (const auto &arg : cmd) {
+                execArgs.push_back(const_cast<char *>(arg.c_str()));
             }
             execArgs.push_back(nullptr);
             execvp(execArgs[0], execArgs.data());
         } else {
-            const char* shell = std::getenv("SHELL");
+            const char *shell = std::getenv("SHELL");
             if (!shell) {
                 shell = "/bin/sh";
             }
@@ -50,14 +53,14 @@ PTYSource::~PTYSource() {
     }
 }
 
-ssize_t PTYSource::read(char* buf, size_t len) {
+ssize_t PTYSource::read(char *buf, size_t len) {
     if (masterFd == -1) {
         return -1;
     }
     return ::read(masterFd, buf, len);
 }
 
-ssize_t PTYSource::write(const char* buf, size_t len) {
+ssize_t PTYSource::write(const char *buf, size_t len) {
     if (masterFd == -1) {
         return -1;
     }
@@ -76,7 +79,7 @@ winsize PTYSource::getSize() const {
     return ws;
 }
 
-void PTYSource::setSize(winsize ws) {
+void PTYSource::setSize(winsize ws) const {
     if (masterFd != -1) {
         ioctl(masterFd, TIOCSWINSZ, &ws);
     }

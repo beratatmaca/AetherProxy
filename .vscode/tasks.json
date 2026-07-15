@@ -1,0 +1,86 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "AetherProxy: Share Terminal",
+            "type": "shell",
+            "command": "${workspaceFolder}/build/aetherproxy",
+            "problemMatcher": []
+        },
+        {
+            "label": "AetherProxy: Connect",
+            "type": "shell",
+            "command": "${workspaceFolder}/build/aetherproxy connect ${input:roomCode}",
+            "problemMatcher": []
+        },
+        {
+            "label": "AetherProxy: Share Logs",
+            "type": "shell",
+            "command": "tail -f ${input:logFile} | ${workspaceFolder}/build/aetherproxy",
+            "problemMatcher": []
+        },
+        {
+            "label": "AetherProxy: Collab",
+            "type": "shell",
+            "command": "${workspaceFolder}/build/aetherproxy collab",
+            "problemMatcher": []
+        },
+        {
+            "label": "Build",
+            "type": "shell",
+            "command": "cmake --build build --parallel",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Format",
+            "type": "shell",
+            "command": "cmake --build build --target format",
+            "problemMatcher": []
+        },
+        {
+            "label": "Lint",
+            "type": "shell",
+            "command": "cmake --build build --target lint",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "Docs",
+            "type": "shell",
+            "command": "cmake --build build --target docs",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Tests",
+            "type": "shell",
+            "command": "cmake --build build --target run-tests",
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "CI (GitHub Actions)",
+            "type": "shell",
+            "command": "cmake --build build --target ci",
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "roomCode",
+            "type": "promptString",
+            "description": "Room code (word-word-word-NNNNN)"
+        },
+        {
+            "id": "logFile",
+            "type": "promptString",
+            "description": "Log file to stream",
+            "default": "app.log"
+        }
+    ]
+}

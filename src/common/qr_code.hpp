@@ -1,5 +1,9 @@
 #pragma once
 #include <string>
+#include <vector>
 
-/// Renders terminal QR codes.
-void renderQRCode(const std::string& text);
+/// Returns QR code lines. Compact halves the height.
+std::vector<std::string> qrCodeLines(const std::string &text, bool compact);
+
+/// Renders a full-size terminal QR code.
+void renderQRCode(const std::string &text);

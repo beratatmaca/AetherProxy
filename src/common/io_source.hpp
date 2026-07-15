@@ -7,10 +7,10 @@ public:
     virtual ~IOSource() = default;
 
     /// Reads data from source.
-    virtual ssize_t read(char* buf, size_t len) = 0;
+    virtual ssize_t read(char *buf, size_t len) = 0;
 
     /// Writes data to source.
-    virtual ssize_t write(const char* buf, size_t len) = 0;
+    virtual ssize_t write(const char *buf, size_t len) = 0;
 
     /// Returns read-only state.
     virtual bool isReadOnly() const = 0;

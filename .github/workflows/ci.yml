@@ -5,13 +5,78 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ── Release build + Playwright integration tests ─────────────────────────────
+  # ################ Lint: clang-format + clang-tidy ################
+  lint:
+    name: Lint (format + tidy)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build clang-format clang-tidy \
+            libssl-dev python3 xxd
+
+      - name: Check formatting
+        run: |
+          find src -name '*.cpp' -o -name '*.hpp' | grep -v embedded_assets \
+            | xargs clang-format --dry-run --Werror
+
+      - name: Configure for compile database
+        run: |
+          bash tools/embed-assets.sh
+          cmake --preset release
+
+      - name: Run clang-tidy
+        run: |
+          find src -name '*.cpp' | grep -v embedded_assets \
+            | xargs clang-tidy -p build-release --quiet
+
+  # ################ Build matrix: g++ and clang++, Debug and Release ################
+  build:
+    name: Build (${{ matrix.compiler }} / ${{ matrix.build_type }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+        build_type: [Debug, Release]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake ninja-build \
+            libssl-dev python3 xxd
+
+      - name: Embed assets
+        run: bash tools/embed-assets.sh
+
+      - name: Configure
+        run: |
+          cmake -B build-matrix -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+
+      - name: Build
+        run: cmake --build build-matrix --parallel "$(nproc)"
+
+  # ################ Release build + Playwright integration tests ################
   integration:
     name: Integration tests (Release / GCC)
     runs-on: ubuntu-24.04
@@ -25,17 +90,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build \
-            libssl-dev libsrtp2-dev \
-            libqrencode-dev \
-            python3 \
-            xvfb
-
-      - name: Cache CMake FetchContent downloads
-        uses: actions/cache@v4
-        with:
-          path: ~/.cmake
-          key: fetchcontent-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-${{ runner.os }}-
+            libssl-dev python3 xxd xvfb
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -52,27 +107,26 @@ jobs:
         working-directory: tests
         run: npx playwright install --with-deps chromium firefox
 
-      - name: Configure (Release)
-        run: cmake --preset gcc-release -G Ninja
-
       - name: Embed assets
         run: bash tools/embed-assets.sh
 
+      - name: Configure (Release)
+        run: cmake --preset release
+
       - name: Build (Release)
-        run: cmake --build --preset gcc-release
+        run: cmake --build --preset release
 
       - name: Symlink binary for test runner
         run: |
           mkdir -p build
-          ln -sf "$PWD/build-gcc-release/aetherproxy" build/aetherproxy
+          ln -sf "$PWD/build-release/aetherproxy" build/aetherproxy
 
       - name: Run integration tests
         run: bash tools/run-tests.sh
         env:
-          # Playwright needs a display for some browser operations even in headless mode.
           DISPLAY: ':99'
 
-  # ── AddressSanitizer build ────────────────────────────────────────────────────
+  # ################ AddressSanitizer build ################
   asan:
     name: ASan build (Debug / GCC)
     runs-on: ubuntu-24.04
@@ -86,41 +140,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build \
-            libssl-dev libsrtp2-dev \
-            libqrencode-dev \
-            python3
+            libssl-dev python3 xxd
 
-      - name: Cache CMake FetchContent downloads
-        uses: actions/cache@v4
-        with:
-          path: ~/.cmake
-          key: fetchcontent-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-${{ runner.os }}-
+      - name: Run ASan smoke test
+        run: bash tools/run-tests.sh --asan
 
-      - name: Configure (ASan / Debug)
-        run: cmake --preset gcc-asan -G Ninja
-
-      - name: Embed assets
-        run: bash tools/embed-assets.sh
-
-      - name: Build (ASan)
-        run: cmake --build --preset gcc-asan
-
-      - name: Smoke-test under ASan (start + room-code)
-        # Runs the binary for 3 seconds; ASan aborts on the first heap error.
-        # We assert it printed a room code before being killed.
-        run: |
-          ASAN_OPTIONS=detect_leaks=0 timeout 3 \
-            build-gcc-asan/aetherproxy --port 8096 2>&1 | tee /tmp/asan-out.txt || true
-          grep -E '[a-z]+-[a-z]+-[a-z]+-[0-9]{5}' /tmp/asan-out.txt \
-            || { echo "ASan binary did not emit a room code"; exit 1; }
-          echo "ASan smoke-test passed."
-        env:
-          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
-
-  # ── ThreadSanitizer build ─────────────────────────────────────────────────────
+  # ################ ThreadSanitizer build ################
   tsan:
-    name: TSan build (Clang)
+    name: TSan build (Debug / GCC)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
 
@@ -131,34 +158,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang cmake ninja-build \
-            libssl-dev libsrtp2-dev \
-            libqrencode-dev \
-            python3
+            build-essential cmake ninja-build \
+            libssl-dev python3 xxd
 
-      - name: Cache CMake FetchContent downloads
-        uses: actions/cache@v4
-        with:
-          path: ~/.cmake
-          key: fetchcontent-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-${{ runner.os }}-
-
-      - name: Configure (TSan / Clang)
-        run: cmake --preset clang-tsan -G Ninja
-
-      - name: Embed assets
-        run: bash tools/embed-assets.sh
-
-      - name: Build (TSan)
-        run: cmake --build --preset clang-tsan
-
-      - name: Smoke-test under TSan (start + room-code)
-        # Runs the binary for 3 seconds; TSan aborts on detected data races.
-        run: |
-          TSAN_OPTIONS=halt_on_error=1 timeout 3 \
-            build-clang-tsan/aetherproxy --port 8097 2>&1 | tee /tmp/tsan-out.txt || true
-          grep -E '[a-z]+-[a-z]+-[a-z]+-[0-9]{5}' /tmp/tsan-out.txt \
-            || { echo "TSan binary did not emit a room code"; exit 1; }
-          echo "TSan smoke-test passed."
-        env:
-          TSAN_OPTIONS: halt_on_error=1
+      - name: Run TSan smoke test
+        run: bash tools/run-tests.sh --tsan

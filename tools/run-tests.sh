@@ -8,7 +8,7 @@
 # or by the CI 'integration' job). Runs the Playwright suite.
 #
 # --asan  Build under AddressSanitizer first, run ASan smoke test.
-# --tsan  Build under ThreadSanitizer (Clang) first, run TSan smoke test.
+# --tsan  Build under ThreadSanitizer first, run TSan smoke test.
 #
 # Environment variables honoured:
 #   BINARY   Path to binary (default: ./build/aetherproxy)
@@ -41,7 +41,7 @@ embed_assets() {
 build_preset() {
   local preset="$1"
   echo "[run-tests] Configuring preset: $preset"
-  cmake --preset "$preset" -G Ninja
+  cmake --preset "$preset"
   echo "[run-tests] Building preset: $preset"
   cmake --build --preset "$preset" --parallel "$(nproc)"
 }
@@ -50,12 +50,12 @@ build_preset() {
 
 run_asan() {
   embed_assets
-  build_preset gcc-asan
+  build_preset debug
 
   echo "[run-tests] Running ASan smoke test…"
   local out
   out=$(ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 \
-        timeout 4 build-gcc-asan/aetherproxy --port "$((PORT + 1))" 2>&1 || true)
+        timeout 4 build-debug/aetherproxy --port "$((PORT + 1))" 2>&1 || true)
   echo "$out"
 
   if echo "$out" | grep -qE '[a-z]+-[a-z]+-[a-z]+-[0-9]{5}'; then
@@ -70,12 +70,12 @@ run_asan() {
 
 run_tsan() {
   embed_assets
-  build_preset clang-tsan
+  build_preset tsan
 
   echo "[run-tests] Running TSan smoke test…"
   local out
   out=$(TSAN_OPTIONS=halt_on_error=1 \
-        timeout 4 build-clang-tsan/aetherproxy --port "$((PORT + 2))" 2>&1 || true)
+        timeout 4 build-tsan/aetherproxy --port "$((PORT + 2))" 2>&1 || true)
   echo "$out"
 
   if echo "$out" | grep -qE '[a-z]+-[a-z]+-[a-z]+-[0-9]{5}'; then

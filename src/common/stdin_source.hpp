@@ -8,10 +8,10 @@ public:
     StdinSource();
 
     /// Reads data from stdin.
-    ssize_t read(char* buf, size_t len) override;
+    ssize_t read(char *buf, size_t len) override;
 
     /// Writes returns -1.
-    ssize_t write(const char* buf, size_t len) override;
+    ssize_t write(const char *buf, size_t len) override;
 
     /// Returns true.
     bool isReadOnly() const override;

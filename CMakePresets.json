@@ -2,59 +2,16 @@
   "version": 3,
   "cmakeMinimumRequired": {
     "major": 3,
-    "minor": 16,
+    "minor": 20,
     "patch": 0
   },
   "configurePresets": [
     {
-      "name": "gcc-debug",
-      "displayName": "GCC Debug",
-      "description": "Configure with GCC (Debug mode)",
-      "binaryDir": "${sourceDir}/build-gcc-debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "BUILD_TESTING": "ON"
-      },
-      "environment": {
-        "CC": "gcc",
-        "CXX": "g++"
-      }
-    },
-    {
-      "name": "clang-debug",
-      "displayName": "Clang Debug",
-      "description": "Configure with Clang (Debug mode)",
-      "binaryDir": "${sourceDir}/build-clang-debug",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "BUILD_TESTING": "ON"
-      },
-      "environment": {
-        "CC": "clang",
-        "CXX": "clang++"
-      }
-    },
-    {
-      "name": "gcc-release",
-      "displayName": "GCC Release",
-      "description": "Configure with GCC (Release mode)",
-      "binaryDir": "${sourceDir}/build-gcc-release",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "BUILD_TESTING": "OFF"
-      },
-      "environment": {
-        "CC": "gcc",
-        "CXX": "g++"
-      }
-    },
-    {
-      "name": "gcc-asan",
-      "displayName": "GCC ASan",
-      "description": "Address Sanitizer build (GCC)",
-      "binaryDir": "${sourceDir}/build-gcc-asan",
+      "name": "debug",
+      "displayName": "Debug (GCC + ASan)",
+      "description": "Debug build with AddressSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
@@ -65,56 +22,64 @@
       }
     },
     {
-      "name": "clang-tsan",
-      "displayName": "Clang TSan",
-      "description": "Thread Sanitizer build (Clang — TSan is best-supported on Clang)",
-      "binaryDir": "${sourceDir}/build-clang-tsan",
+      "name": "tsan",
+      "displayName": "TSan (GCC)",
+      "description": "Debug build with ThreadSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-tsan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Tsan",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
       },
       "environment": {
-        "CC": "clang",
-        "CXX": "clang++"
+        "CC": "gcc",
+        "CXX": "g++"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release (GCC)",
+      "description": "Optimized build for local use",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      },
+      "environment": {
+        "CC": "gcc",
+        "CXX": "g++"
+      }
+    },
+    {
+      "name": "release-musl",
+      "displayName": "Release (musl static)",
+      "description": "Static distribution binary. Needs x86_64-linux-musl cross toolchain.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-release-musl",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "STATIC_BUILD": "ON",
+        "CMAKE_C_COMPILER": "x86_64-linux-musl-gcc",
+        "CMAKE_CXX_COMPILER": "x86_64-linux-musl-g++"
       }
     }
   ],
   "buildPresets": [
     {
-      "name": "gcc-debug",
-      "configurePreset": "gcc-debug"
+      "name": "debug",
+      "configurePreset": "debug"
     },
     {
-      "name": "clang-debug",
-      "configurePreset": "clang-debug"
+      "name": "tsan",
+      "configurePreset": "tsan"
     },
     {
-      "name": "gcc-release",
-      "configurePreset": "gcc-release"
+      "name": "release",
+      "configurePreset": "release"
     },
     {
-      "name": "gcc-asan",
-      "configurePreset": "gcc-asan"
-    },
-    {
-      "name": "clang-tsan",
-      "configurePreset": "clang-tsan"
-    }
-  ],
-  "testPresets": [
-    {
-      "name": "gcc-debug",
-      "configurePreset": "gcc-debug",
-      "output": {
-        "outputOnFailure": true
-      }
-    },
-    {
-      "name": "clang-debug",
-      "configurePreset": "clang-debug",
-      "output": {
-        "outputOnFailure": true
-      }
+      "name": "release-musl",
+      "configurePreset": "release-musl"
     }
   ]
 }

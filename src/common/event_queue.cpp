@@ -2,7 +2,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
-EventQueue::EventQueue() : efd(-1) {
+EventQueue::EventQueue() {
     efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 }
 

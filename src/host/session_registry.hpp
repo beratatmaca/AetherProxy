@@ -8,11 +8,7 @@
 #include <rtc/datachannel.hpp>
 
 /// Client permission levels.
-enum class Permission {
-    Owner,
-    Collaborator,
-    Observer
-};
+enum class Permission : std::uint8_t { Owner, Collaborator, Observer };
 
 /// Terminal size specifications.
 struct TermSize {
@@ -39,25 +35,25 @@ public:
     SessionRegistry(int ptyFd, int maxClientsVal);
 
     /// Registers a client.
-    void addClient(const std::string& id, const std::string& name, Permission perm, std::shared_ptr<rtc::DataChannel> chan);
+    void addClient(const std::string &id, const std::string &name, Permission perm, const std::shared_ptr<rtc::DataChannel> &chan);
 
     /// Unregisters a client.
-    void removeClient(const std::string& id);
+    void removeClient(const std::string &id);
 
     /// Updates client size.
-    void updateClientSize(const std::string& id, TermSize size);
+    void updateClientSize(const std::string &id, TermSize size);
 
     /// Broadcasts terminal output.
     void broadcastOutput(std::string_view data);
 
     /// Broadcasts control messages.
-    void broadcastControl(const std::string& msg);
+    void broadcastControl(const std::string &msg);
 
     /// Processes client input data.
-    void handleInput(const std::string& id, std::string_view data, std::function<void(std::string_view)> onPtyWrite);
+    void handleInput(const std::string &id, std::string_view data, const std::function<void(std::string_view)> &onPtyWrite);
 
     /// Updates client activity.
-    void updateActivity(const std::string& id);
+    void updateActivity(const std::string &id);
 
     /// Checks inactive clients.
     void checkInactivity();
@@ -65,12 +61,19 @@ public:
     /// Registers owner exit callback.
     void onOwnerDisconnect(std::function<void()> cb);
 
+    /// Returns connected client count.
+    size_t clientCount() const;
+
+    /// Sets the host terminal size floor.
+    void setBaseSize(TermSize size);
+
 private:
     TermSize calcLCDSize() const;
     void applyLCDSize();
     void broadcastPresence();
 
     std::vector<Client> clients;
+    TermSize baseSize{24, 80};
     int pty;
     int maxClients;
     std::function<void()> ownerExitCallback;

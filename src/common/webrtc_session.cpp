@@ -1,11 +1,8 @@
 #include "common/webrtc_session.hpp"
 #include <iostream>
-#include <cassert>
-#include <thread>
-#include <chrono>
 #include <future>
 
-WebRTCSession::WebRTCSession() {}
+WebRTCSession::WebRTCSession() = default;
 
 WebRTCSession::~WebRTCSession() {
     if (dc) {
@@ -16,29 +13,20 @@ WebRTCSession::~WebRTCSession() {
     }
 }
 
-void WebRTCSession::initialize(const std::vector<std::string>& stunServers,
-                                const std::vector<std::string>& turnServers,
-                                const std::string& turnUser,
-                                const std::string& turnPass,
-                                bool noStun,
-                                bool noTurn) {
-    std::vector<std::string> stun = stunServers;
-    std::vector<std::string> turn = turnServers;
-    std::string user = turnUser;
-    std::string pass = turnPass;
-
+void WebRTCSession::initialize(const std::vector<std::string> &stunServers, const std::vector<std::string> &turnServers,
+                               const std::string &turnUser, const std::string &turnPass, bool noStun, bool noTurn, bool offerer) {
     rtc::Configuration config;
     if (!noStun) {
-        for (const auto& s : stun) {
+        for (const auto &s : stunServers) {
             config.iceServers.emplace_back(s);
         }
     }
     if (!noTurn) {
-        for (const auto& t : turn) {
+        for (const auto &t : turnServers) {
             rtc::IceServer server(t);
             server.type = rtc::IceServer::Type::Turn;
-            server.username = user;
-            server.password = pass;
+            server.username = turnUser;
+            server.password = turnPass;
             config.iceServers.push_back(server);
         }
     }
@@ -46,8 +34,7 @@ void WebRTCSession::initialize(const std::vector<std::string>& stunServers,
     pc = std::make_shared<rtc::PeerConnection>(config);
 
     pc->onIceStateChange([this](rtc::PeerConnection::IceState state) {
-        if (state == rtc::PeerConnection::IceState::Disconnected ||
-            state == rtc::PeerConnection::IceState::Failed ||
+        if (state == rtc::PeerConnection::IceState::Disconnected || state == rtc::PeerConnection::IceState::Failed ||
             state == rtc::PeerConnection::IceState::Closed) {
             if (disconnectCallback) {
                 disconnectCallback();
@@ -55,26 +42,29 @@ void WebRTCSession::initialize(const std::vector<std::string>& stunServers,
         }
     });
 
-    pc->onLocalCandidate([this](rtc::Candidate cand) {
+    pc->onLocalCandidate([this](const rtc::Candidate &cand) {
         if (candidateCallback) {
             candidateCallback(std::string(cand), cand.mid());
         }
     });
 
     pc->onDataChannel([this](std::shared_ptr<rtc::DataChannel> channel) {
-        dc = channel;
+        dc = std::move(channel);
         registerDataChannelCallbacks();
     });
 
-    dc = pc->createDataChannel("aether-data");
-    registerDataChannelCallbacks();
+    if (offerer) {
+        dc = pc->createDataChannel("aether-data");
+        registerDataChannelCallbacks();
+    }
 }
 
 void WebRTCSession::registerDataChannelCallbacks() {
-    if (!dc) return;
+    if (!dc)
+        return;
 
     dc->onOpen([this]() {
-        std::cout << "DataChannel opened. DTLS active." << std::endl;
+        std::cout << "DataChannel opened. DTLS active." << "\n" << std::flush;
         if (openCallback) {
             openCallback();
         }
@@ -87,7 +77,7 @@ void WebRTCSession::registerDataChannelCallbacks() {
             }
         } else if (std::holds_alternative<rtc::binary>(msg)) {
             auto data = std::get<rtc::binary>(msg);
-            std::string str(reinterpret_cast<const char*>(data.data()), data.size());
+            std::string str(reinterpret_cast<const char *>(data.data()), data.size());
             if (messageCallback) {
                 messageCallback(str);
             }
@@ -98,6 +88,9 @@ void WebRTCSession::registerDataChannelCallbacks() {
 std::string WebRTCSession::createOffer() {
     if (!pc) {
         return "";
+    }
+    if (auto existing = pc->localDescription()) {
+        return std::string(existing.value());
     }
     auto promise = std::make_shared<std::promise<void>>();
     auto future = promise->get_future();
@@ -141,25 +134,25 @@ std::string WebRTCSession::createAnswer() {
     return std::string(answer.value());
 }
 
-void WebRTCSession::setOffer(const std::string& sdp) {
+void WebRTCSession::setOffer(const std::string &sdp) {
     if (pc) {
         pc->setRemoteDescription(rtc::Description(sdp, rtc::Description::Type::Offer));
     }
 }
 
-void WebRTCSession::setAnswer(const std::string& sdp) {
+void WebRTCSession::setAnswer(const std::string &sdp) {
     if (pc) {
         pc->setRemoteDescription(rtc::Description(sdp, rtc::Description::Type::Answer));
     }
 }
 
-void WebRTCSession::addCandidate(const std::string& sdp, const std::string& mid) {
+void WebRTCSession::addCandidate(const std::string &sdp, const std::string &mid) {
     if (pc) {
         pc->addRemoteCandidate(rtc::Candidate(sdp, mid));
     }
 }
 
-void WebRTCSession::send(const std::string& msg) {
+void WebRTCSession::send(const std::string &msg) {
     if (dc && dc->isOpen()) {
         dc->send(msg);
     }

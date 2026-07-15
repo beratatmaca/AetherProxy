@@ -46,9 +46,20 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
  */
 async function spawnHost(extraArgs = [], stdinBuf = null, timeoutMs = 12_000) {
     const args = ['--port', String(PORT), ...extraArgs];
-    const proc = spawn(BINARY, args, {
-        stdio: stdinBuf !== null ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
-    });
+    let proc;
+    if (stdinBuf !== null) {
+        // Pipe mode: feed bytes over stdin.
+        proc = spawn(BINARY, args, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            detached: true,
+        });
+    } else {
+        // Terminal mode: allocate a PTY via script(1) so isatty(stdin) is true.
+        proc = spawn('script', ['-qefc', [BINARY, ...args].join(' '), '/dev/null'], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: true,
+        });
+    }
 
     let stdoutBuf = '';
     let roomCode  = '';
@@ -85,10 +96,18 @@ async function spawnHost(extraArgs = [], stdinBuf = null, timeoutMs = 12_000) {
     return { proc, roomCode, getStdout: () => stdoutBuf };
 }
 
-/** Kills a host process and waits for it to exit. */
+/** Kills a host process group and waits for exit; tolerates already-dead hosts. */
 async function killHost(proc) {
-    proc.kill('SIGTERM');
-    await new Promise(r => proc.on('exit', r));
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    try { process.kill(-proc.pid, 'SIGTERM'); }
+    catch { try { proc.kill('SIGTERM'); } catch { /* already gone */ } }
+    await new Promise(resolve => {
+        const t = setTimeout(() => {
+            try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* already gone */ }
+            resolve();
+        }, 3000);
+        proc.once('exit', () => { clearTimeout(t); resolve(); });
+    });
 }
 
 // ################ BINARY-SIDE tests ################
@@ -393,10 +412,10 @@ async function runDomTests(browserType, browserName) {
         assert.ok(title.includes('AetherProxy'), `Title: "${title}"`);
         console.log('  [T-06] Page title ✓');
 
-        // T-07  xterm canvas mounts.
-        const canvas = await page.$('.xterm-screen canvas');
-        assert.ok(canvas !== null, 'xterm canvas must be in DOM');
-        console.log('  [T-07] xterm canvas ✓');
+        // T-07  xterm terminal mounts (xterm 5.x uses the DOM renderer by default).
+        const screen = await page.$('.xterm .xterm-screen');
+        assert.ok(screen !== null, 'xterm screen element must be in DOM');
+        console.log('  [T-07] xterm mounts ✓');
 
         // T-08  Toolbar buttons present.
         for (const id of ['btn-ctrl','btn-alt','btn-tab','btn-esc',

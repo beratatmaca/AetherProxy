@@ -12,14 +12,11 @@ SignalingClient::~SignalingClient() {
     }
 }
 
-void SignalingClient::connect(const std::string& url, const std::string& roomCode) {
+void SignalingClient::connect(const std::string &url, const std::string &roomCode) {
     room = roomCode;
 
     ws->onOpen([this]() {
-        json joinMsg = {
-            {"type", "join"},
-            {"room", room}
-        };
+        json joinMsg = {{"type", "join"}, {"room", room}};
         ws->send(joinMsg.dump());
         if (openCallback) {
             openCallback();
@@ -41,21 +38,18 @@ void SignalingClient::connect(const std::string& url, const std::string& roomCod
                 }
             }
         } catch (...) {
+            return;
         }
     });
 
     ws->open(url);
 }
 
-void SignalingClient::send(const std::string& type, const std::string& data) {
+void SignalingClient::send(const std::string &type, const std::string &data) {
     if (!ws || !ws->isOpen()) {
         return;
     }
-    json msg = {
-        {"room", room},
-        {"type", type},
-        {"data", data}
-    };
+    json msg = {{"room", room}, {"type", type}, {"data", data}};
     ws->send(msg.dump());
 }
 

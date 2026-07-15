@@ -16,12 +16,9 @@ public:
     ~WebRTCSession();
 
     /// Initializes connection using signaling parameters.
-    void initialize(const std::vector<std::string>& stunServers,
-                    const std::vector<std::string>& turnServers,
-                    const std::string& turnUser,
-                    const std::string& turnPass,
-                    bool noStun = false,
-                    bool noTurn = false);
+    /// @param offerer True creates the DataChannel locally.
+    void initialize(const std::vector<std::string> &stunServers, const std::vector<std::string> &turnServers, const std::string &turnUser,
+                    const std::string &turnPass, bool noStun = false, bool noTurn = false, bool offerer = true);
 
     /// Generates local SDP offer.
     std::string createOffer();
@@ -30,16 +27,16 @@ public:
     std::string createAnswer();
 
     /// Sets remote SDP offer.
-    void setOffer(const std::string& sdp);
+    void setOffer(const std::string &sdp);
 
     /// Sets remote SDP answer.
-    void setAnswer(const std::string& sdp);
+    void setAnswer(const std::string &sdp);
 
     /// Adds remote ICE candidate.
-    void addCandidate(const std::string& sdp, const std::string& mid);
+    void addCandidate(const std::string &sdp, const std::string &mid);
 
     /// Sends message via DataChannel.
-    void send(const std::string& msg);
+    void send(const std::string &msg);
 
     /// Sets message reception callback.
     void onMessage(std::function<void(std::string)> cb);

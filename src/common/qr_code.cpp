@@ -2,32 +2,62 @@
 #include <qrencode.h>
 #include <iostream>
 
-void renderQRCode(const std::string& text) {
-    QRcode* qr = QRcode_encodeString(text.c_str(), 0, QR_ECLEVEL_L, QR_MODE_8, 1);
+std::vector<std::string> qrCodeLines(const std::string &text, bool compact) {
+    std::vector<std::string> lines;
+    QRcode *qr = QRcode_encodeString(text.c_str(), 0, QR_ECLEVEL_L, QR_MODE_8, 1);
     if (!qr) {
-        return;
+        return lines;
     }
 
     int width = qr->width;
-    unsigned char* data = qr->data;
+    const int quiet = 2;
+    int total = width + 2 * quiet;
 
-    std::cout << "\n";
-    for (int y = -2; y < width + 2; ++y) {
-        std::cout << "  ";
-        for (int x = -2; x < width + 2; ++x) {
-            bool black = false;
-            if (x >= 0 && x < width && y >= 0 && y < width) {
-                black = (data[y * width + x] & 1);
-            }
-            if (black) {
-                std::cout << "\u2588\u2588";
-            } else {
-                std::cout << "  ";
-            }
+    auto light = [&](int x, int y) {
+        int mx = x - quiet;
+        int my = y - quiet;
+        if (mx < 0 || my < 0 || mx >= width || my >= width) {
+            return true;
         }
-        std::cout << "\n";
+        return (qr->data[my * width + mx] & 1) == 0;
+    };
+
+    if (compact) {
+        for (int y = 0; y < total; y += 2) {
+            std::string line;
+            for (int x = 0; x < total; ++x) {
+                bool top = light(x, y);
+                bool bottom = (y + 1 < total) ? light(x, y + 1) : true;
+                if (top && bottom) {
+                    line += "█";
+                } else if (top) {
+                    line += "▀";
+                } else if (bottom) {
+                    line += "▄";
+                } else {
+                    line += " ";
+                }
+            }
+            lines.push_back(line);
+        }
+    } else {
+        for (int y = 0; y < total; ++y) {
+            std::string line;
+            for (int x = 0; x < total; ++x) {
+                line += light(x, y) ? "██" : "  ";
+            }
+            lines.push_back(line);
+        }
     }
-    std::cout << "\n";
 
     QRcode_free(qr);
+    return lines;
+}
+
+void renderQRCode(const std::string &text) {
+    std::cout << "\n";
+    for (const auto &line : qrCodeLines(text, false)) {
+        std::cout << "  " << line << "\n";
+    }
+    std::cout << "\n";
 }

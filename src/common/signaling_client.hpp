@@ -14,10 +14,10 @@ public:
     ~SignalingClient();
 
     /// Connects to signaling server.
-    void connect(const std::string& url, const std::string& roomCode);
+    void connect(const std::string &url, const std::string &roomCode);
 
     /// Sends message to room.
-    void send(const std::string& type, const std::string& data);
+    void send(const std::string &type, const std::string &data);
 
     /// Sets message reception callback.
     void onMessage(std::function<void(std::string type, std::string data)> cb);

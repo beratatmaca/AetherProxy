@@ -15,7 +15,7 @@ public:
     ~NativeClient();
 
     /// Connects to a remote room.
-    void connect(const std::string& signalingUrl, const std::string& roomCode);
+    void connect(const std::string &signalingUrl, const std::string &roomCode);
 
     /// Starts bridging loop.
     void run();
@@ -24,6 +24,6 @@ private:
     std::shared_ptr<SignalingClient> signalClient;
     std::shared_ptr<WebRTCSession> session;
     EventQueue eq;
-    int winchFd;
-    bool running;
+    int winchFd = -1;
+    bool running = false;
 };

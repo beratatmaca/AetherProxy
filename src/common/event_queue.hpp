@@ -1,17 +1,18 @@
 #pragma once
+#include <cstdint>
 #include <queue>
 #include <mutex>
 #include <string>
 #include <memory>
 
 namespace rtc {
-    class DataChannel;
+class DataChannel;
 }
 
 /// Structured thread-safe event.
 struct Event {
-    enum class Type {
-        None,       ///< Queue-empty sentinel — not a real event.
+    enum class Type : std::uint8_t {
+        None,  ///< Queue-empty sentinel — not a real event.
         Message,
         Join,
         Disconnect
@@ -44,5 +45,5 @@ public:
 private:
     std::queue<Event> queue;
     mutable std::mutex mutex;
-    int efd;
+    int efd = -1;
 };
