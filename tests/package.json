@@ -2,6 +2,9 @@
   "name": "aetherproxy-tests",
   "version": "0.1.0",
   "private": true,
+  "scripts": {
+    "test": "node integration.js"
+  },
   "dependencies": {
     "ws": "^8.16.0"
   },

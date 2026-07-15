@@ -22,8 +22,12 @@ public:
     /// Sets message reception callback.
     void onMessage(std::function<void(std::string type, std::string data)> cb);
 
+    /// Sets socket open callback.
+    void onOpen(std::function<void()> cb);
+
 private:
     std::shared_ptr<rtc::WebSocket> ws;
     std::string room;
     std::function<void(std::string type, std::string data)> messageCallback;
+    std::function<void()> openCallback;
 };

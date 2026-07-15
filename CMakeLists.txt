@@ -27,12 +27,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(qrencode)
 
-# Fetch nlohmann_json
-FetchContent_Declare(
-    json
-    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
-)
-FetchContent_MakeAvailable(json)
+# libdatachannel already vendors and exports nlohmann_json
+if(NOT TARGET nlohmann_json)
+    FetchContent_Declare(
+        json
+        URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+    )
+    FetchContent_MakeAvailable(json)
+endif()
 
 # Add executable
 add_executable(aetherproxy

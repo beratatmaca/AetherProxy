@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # needed to create GitHub Releases and upload assets
+
+jobs:
+  # ── Build static binaries for both architectures ──────────────────────────────
+  build:
+    name: Static build — ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            cmake_preset: gcc-release
+            triple: x86_64-linux-gnu
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            cmake_preset: gcc-release
+            triple: aarch64-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build \
+            libssl-dev libsrtp2-dev \
+            libqrencode-dev \
+            python3 \
+            dpkg-dev
+
+      - name: Cache CMake FetchContent downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cmake
+          key: fetchcontent-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Embed web assets
+        run: bash tools/embed-assets.sh
+
+      - name: Configure (Release + static)
+        run: |
+          cmake --preset ${{ matrix.cmake_preset }} -G Ninja \
+            -DSTATIC_BUILD=ON \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.cmake_preset }} --parallel "$(nproc)"
+
+      - name: Rename binary for release
+        run: |
+          cp build-gcc-release/aetherproxy aetherproxy-linux-${{ matrix.arch }}
+          chmod +x aetherproxy-linux-${{ matrix.arch }}
+
+      - name: Package .deb
+        run: |
+          bash tools/build-deb.sh \
+            --arch ${{ matrix.arch }} \
+            --binary aetherproxy-linux-${{ matrix.arch }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.arch }}
+          path: |
+            aetherproxy-linux-${{ matrix.arch }}
+            dist/*.deb
+          retention-days: 1
+
+  # ── Draft GitHub Release with all assets ─────────────────────────────────────
+  release:
+    name: Draft GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: echo "version=$(cat VERSION | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Download all dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist/
+
+      - name: List release assets
+        run: ls -lh dist/
+
+      - name: Create GitHub Release (draft)
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: AetherProxy ${{ steps.version.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            ## AetherProxy ${{ steps.version.outputs.version }}
+
+            ### Install (one-liner)
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/tools/install.sh | bash
+            ```
+
+            ### Manual download
+            | Platform | File |
+            |---|---|
+            | Linux x86_64 | `aetherproxy-linux-amd64` |
+            | Linux ARM64  | `aetherproxy-linux-arm64` |
+            | Debian/Ubuntu x86_64 | `aetherproxy_${{ steps.version.outputs.version }}_amd64.deb` |
+            | Debian/Ubuntu ARM64  | `aetherproxy_${{ steps.version.outputs.version }}_arm64.deb` |
+
+            ### Changelog
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
+          files: dist/**

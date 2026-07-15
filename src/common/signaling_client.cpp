@@ -21,6 +21,9 @@ void SignalingClient::connect(const std::string& url, const std::string& roomCod
             {"room", room}
         };
         ws->send(joinMsg.dump());
+        if (openCallback) {
+            openCallback();
+        }
     });
 
     ws->onMessage([this](rtc::message_variant data) {
@@ -58,4 +61,8 @@ void SignalingClient::send(const std::string& type, const std::string& data) {
 
 void SignalingClient::onMessage(std::function<void(std::string type, std::string data)> cb) {
     messageCallback = std::move(cb);
+}
+
+void SignalingClient::onOpen(std::function<void()> cb) {
+    openCallback = std::move(cb);
 }

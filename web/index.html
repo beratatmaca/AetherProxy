@@ -312,21 +312,24 @@
                         if (payload.type === 'resize') {
                             term.resize(payload.cols, payload.rows);
                         } else if (payload.type === 'presence') {
-                            // Render one colored pill per peer.
+                            // Render one pill per peer using host-assigned colors.
                             peersBar.innerHTML = '';
-                            const colors = [
-                                '#3b82f6','#10b981','#f59e0b','#ec4899',
-                                '#8b5cf6','#06b6d4','#f97316','#84cc16'
-                            ];
-                            (payload.clients || []).forEach((c, i) => {
+                            (payload.clients || []).forEach((c) => {
+                                const color = c.color || '#888888';
                                 const pill = document.createElement('div');
                                 pill.className = 'peer-pill';
+                                pill.title = c.permission || '';
+                                pill.style.opacity = c.active ? '1' : '0.45';
                                 const dot = document.createElement('span');
                                 dot.className = 'peer-dot';
-                                dot.style.background = colors[i % colors.length];
-                                dot.style.boxShadow = `0 0 5px ${colors[i % colors.length]}`;
+                                dot.style.background = color;
+                                if (c.active) {
+                                    dot.style.boxShadow = `0 0 5px ${color}`;
+                                }
                                 pill.appendChild(dot);
-                                pill.appendChild(document.createTextNode(c.displayName || c));
+                                const label = (c.displayName || c.id || '') +
+                                    (c.active ? '' : ' (idle)');
+                                pill.appendChild(document.createTextNode(label));
                                 peersBar.appendChild(pill);
                             });
                         } else if (payload.type === 'eof') {

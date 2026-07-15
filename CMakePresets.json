@@ -49,6 +49,34 @@
         "CC": "gcc",
         "CXX": "g++"
       }
+    },
+    {
+      "name": "gcc-asan",
+      "displayName": "GCC ASan",
+      "description": "Address Sanitizer build (GCC)",
+      "binaryDir": "${sourceDir}/build-gcc-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      },
+      "environment": {
+        "CC": "gcc",
+        "CXX": "g++"
+      }
+    },
+    {
+      "name": "clang-tsan",
+      "displayName": "Clang TSan",
+      "description": "Thread Sanitizer build (Clang — TSan is best-supported on Clang)",
+      "binaryDir": "${sourceDir}/build-clang-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Tsan",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      },
+      "environment": {
+        "CC": "clang",
+        "CXX": "clang++"
+      }
     }
   ],
   "buildPresets": [
@@ -63,6 +91,14 @@
     {
       "name": "gcc-release",
       "configurePreset": "gcc-release"
+    },
+    {
+      "name": "gcc-asan",
+      "configurePreset": "gcc-asan"
+    },
+    {
+      "name": "clang-tsan",
+      "configurePreset": "clang-tsan"
     }
   ],
   "testPresets": [

@@ -217,32 +217,20 @@ static const std::vector<std::string_view>& wordList() {
 
 std::string generateRoomCode() {
     static const std::vector<std::string_view>& words = wordList();
-    const size_t N = words.size(); // exactly 2048, all <= 7 letters
 
     std::random_device rd;
 
-    // Draw an index in [0, N) for each word using rejection sampling to
-    // avoid any modulo bias. Each draw is a fresh CSPRNG call.
-    auto pickWord = [&]() -> std::string_view {
-        // N is a power of two (2048 = 2^11), so simple masking is unbiased.
-        static_assert((2048 & (2048 - 1)) == 0, "N must be a power of two for mask trick");
-        return words[rd() & (N - 1)];
-    };
-
-    // Numeric suffix: 10000-99999 (5 digits). Draw 32 bits, rejection-sample
-    // into [0, 90000) to avoid bias, then offset by 10000.
-    auto pickNum = [&]() -> uint32_t {
-        constexpr uint32_t range = 90000u;
-        constexpr uint32_t limit = (UINT32_MAX / range) * range;
+    auto pickUnbiased = [&](uint32_t range) -> uint32_t {
+        uint32_t limit = (UINT32_MAX / range) * range;
         uint32_t v;
         do { v = rd(); } while (v >= limit);
-        return v % range + 10000u;
+        return v % range;
     };
 
-    std::string w1(pickWord());
-    std::string w2(pickWord());
-    std::string w3(pickWord());
-    uint32_t    num = pickNum();
+    std::string w1(words[pickUnbiased(words.size())]);
+    std::string w2(words[pickUnbiased(words.size())]);
+    std::string w3(words[pickUnbiased(words.size())]);
+    uint32_t    num = pickUnbiased(90000U) + 10000U;
 
     return w1 + "-" + w2 + "-" + w3 + "-" + std::to_string(num);
 }

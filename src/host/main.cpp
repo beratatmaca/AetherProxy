@@ -37,16 +37,29 @@ bool hasFlag(const std::vector<std::string_view>& args, std::string_view flag) {
     return std::find(args.begin(), args.end(), flag) != args.end();
 }
 
-/// Returns the first non-loopback IPv4 LAN address, or "127.0.0.1" as fallback.
+static bool isVirtualInterface(const char* name) {
+    static const std::vector<std::string_view> prefixes = {
+        "docker", "br-", "veth", "virbr", "vmnet", "tun", "tap", "wg"
+    };
+    std::string_view n(name);
+    for (const auto& p : prefixes) {
+        if (n.substr(0, p.size()) == p) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static std::string getLanIp() {
     struct ifaddrs* ifap = nullptr;
     if (getifaddrs(&ifap) != 0) return "127.0.0.1";
     std::string result = "127.0.0.1";
     for (struct ifaddrs* ifa = ifap; ifa != nullptr; ifa = ifa->ifa_next) {
         if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+        if (ifa->ifa_name && isVirtualInterface(ifa->ifa_name)) continue;
         auto* sa = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
         uint32_t addr = ntohl(sa->sin_addr.s_addr);
-        if ((addr >> 24) == 127) continue; // skip loopback
+        if ((addr >> 24) == 127) continue;
         char buf[INET_ADDRSTRLEN];
         if (inet_ntop(AF_INET, &sa->sin_addr, buf, sizeof(buf))) {
             result = buf;
@@ -168,14 +181,11 @@ int main(int argc, char* argv[]) {
     });
     serverThread.detach();
 
-    // Internet mode: if --signal was supplied, join the signaling room as host
-    // and handle incoming peer offers exactly like the HTTP path does.
     std::shared_ptr<SignalingClient> sigClient;
     if (!config.signalingUrl.empty()) {
         sigClient = std::make_shared<SignalingClient>();
         sigClient->onMessage([&](std::string type, std::string data) {
             if (type != "offer") return;
-            // Each offer encodes the clientId as part of the JSON data field.
             std::string clientId;
             std::string sdp;
             try {
@@ -183,14 +193,13 @@ int main(int argc, char* argv[]) {
                 clientId = j.value("clientId", "");
                 sdp      = j.value("sdp", "");
             } catch (...) {
-                // Legacy plain-SDP path: generate a random clientId.
                 clientId = "sig-" + std::to_string(reinterpret_cast<uintptr_t>(&data));
                 sdp = data;
             }
             if (clientId.empty() || sdp.empty()) return;
 
             std::lock_guard<std::mutex> lock(sessionsMutex);
-            if (sessions.count(clientId)) return; // already connected
+            if (sessions.count(clientId)) return;
 
             auto session = std::make_shared<WebRTCSession>();
             session->initialize(config.stunServers, config.turnServers,
@@ -255,16 +264,14 @@ int main(int argc, char* argv[]) {
                             hasOwner = true;
                         }
                         registry.addClient(evItem.clientId, "Collab", perm, evItem.channel);
-                        // Announce session mode so the browser can lock input if needed
                         std::string modeStr = (mode == SessionMode::Pipe) ? "pipe" : "terminal";
-                        std::string modeFrame = std::string("\x00AETHER:", 8)
+                        std::string modeFrame = std::string("\x00" "AETHER:", 8)
                             + "{\"type\":\"mode\",\"mode\":\"" + modeStr + "\"}";
                         if (evItem.channel) {
                             evItem.channel->send(modeFrame);
                         }
                     } else if (evItem.type == Event::Type::Disconnect) {
                         registry.removeClient(evItem.clientId);
-                        // Erase stale session so a reconnecting client gets a fresh PeerConnection.
                         std::lock_guard<std::mutex> lock(sessionsMutex);
                         sessions.erase(evItem.clientId);
                     } else if (evItem.type == Event::Type::Message) {
@@ -294,7 +301,6 @@ int main(int argc, char* argv[]) {
                     registry.broadcastControl(std::string("{\"type\":\"eof\"}"));
                     running = false;
                 } else if (n <= 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    // PTY master returned EIO: child shell has exited.
                     running = false;
                 }
             }

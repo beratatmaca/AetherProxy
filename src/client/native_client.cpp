@@ -55,14 +55,12 @@ NativeClient::~NativeClient() {
 void NativeClient::connect(const std::string& signalingUrl, const std::string& roomCode) {
     session->initialize({}, {}, "", "", false, false);
 
-    // Generate a unique client identifier for this session.
     std::ostringstream idStream;
     idStream << "nc-" << std::hex << reinterpret_cast<uintptr_t>(this);
     const std::string clientId = idStream.str();
 
     signalClient->onMessage([this, clientId](std::string type, std::string data) {
         if (type == "answer") {
-            // Host wraps answer as {"clientId":...,"sdp":...}; fall back to plain SDP.
             std::string sdp;
             try {
                 auto j = nlohmann::json::parse(data);
@@ -74,10 +72,6 @@ void NativeClient::connect(const std::string& signalingUrl, const std::string& r
                 session->setAnswer(sdp);
             }
         }
-    });
-
-    session->onCandidate([this](std::string sdp, std::string mid) {
-        signalClient->send("candidate", sdp);
     });
 
     session->onOpen([this]() {
@@ -92,12 +86,13 @@ void NativeClient::connect(const std::string& signalingUrl, const std::string& r
         eq.push(Event{Event::Type::Disconnect, "", "", "", nullptr});
     });
 
-    // Connect to signaling server, then create and send our offer.
-    signalClient->connect(signalingUrl, roomCode);
+    signalClient->onOpen([this, clientId]() {
+        std::string offerSdp = session->createOffer();
+        json offerMsg = {{"clientId", clientId}, {"sdp", offerSdp}};
+        signalClient->send("offer", offerMsg.dump());
+    });
 
-    std::string offerSdp = session->createOffer();
-    nlohmann::json offerMsg = {{"clientId", clientId}, {"sdp", offerSdp}};
-    signalClient->send("offer", offerMsg.dump());
+    signalClient->connect(signalingUrl, roomCode);
 
     auto old = ::signal(SIGWINCH, handleSigwinch);
     (void)old;
@@ -149,7 +144,7 @@ void NativeClient::run() {
                 while (true) {
                     Event ev = eq.pop();
                     if (ev.type == Event::Type::None) {
-                        break;  // Queue exhausted — stop draining.
+                        break;
                     }
                     if (ev.type == Event::Type::Disconnect) {
                         running = false;
