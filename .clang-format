@@ -1,0 +1,20 @@
+# AetherProxy C++ formatting.
+---
+Language: Cpp
+BasedOnStyle: Google
+IndentWidth: 4
+ContinuationIndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 140
+AccessModifierOffset: -4
+NamespaceIndentation: None
+PointerAlignment: Right
+DerivePointerAlignment: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Attach
+SortIncludes: false
+SpacesBeforeTrailingComments: 2
+...

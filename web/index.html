@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AetherProxy Web Client</title>
+    <link rel="stylesheet" href="/xterm.css" />
+    <script src="/xterm.js"></script>
+    <script src="/xterm-addon-fit.js"></script>
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(17, 24, 39, 0.7);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --text-color: #f3f4f6;
+            --accent-color: #3b82f6;
+            --accent-hover: #2563eb;
+            --pulse-green: #10b981;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 2rem;
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+        }
+        .logo {
+            font-weight: 700;
+            font-size: 1.25rem;
+            letter-spacing: -0.025em;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.35rem 0.75rem;
+            border-radius: 9999px;
+            border: 1px solid var(--border-color);
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #ef4444;
+        }
+        .status-dot.active {
+            background-color: var(--pulse-green);
+            box-shadow: 0 0 8px var(--pulse-green);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+        main {
+            flex: 1;
+            display: flex;
+            position: relative;
+            padding: 1rem;
+        }
+        #terminal-container {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            padding: 0.5rem;
+            overflow: hidden;
+        }
+        .toolbar {
+            display: flex;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.75rem;
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            border-top: 1px solid var(--border-color);
+        }
+        .btn {
+            background: rgba(255, 255, 255, 0.07);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+        }
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+        .btn:active {
+            transform: scale(0.95);
+        }
+        .btn.modifier-active {
+            background: rgba(59, 130, 246, 0.3);
+            border-color: var(--accent-color);
+            box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+        }
+        #mode-badge {
+            display: none;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.3rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.4);
+            color: #f87171;
+        }
+        #mode-badge.visible {
+            display: flex;
+        }
+        #peers-bar {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+        .peer-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.2rem 0.6rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            transition: border-color 0.3s;
+        }
+        .peer-pill .peer-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        #terminal-container.pipe-locked {
+            pointer-events: none;
+            opacity: 0.9;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">
+            <span>ÆtherProxy</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.75rem;">
+            <div id="peers-bar"></div>
+            <div id="mode-badge">
+                <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                Pipe Mode · Read Only
+            </div>
+            <div class="status" id="status-display">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status-text">Disconnected</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div id="terminal-container"></div>
+    </main>
+
+    <div class="toolbar">
+        <button class="btn" id="btn-ctrl">Ctrl</button>
+        <button class="btn" id="btn-alt">Alt</button>
+        <button class="btn" id="btn-tab">Tab</button>
+        <button class="btn" id="btn-esc">Esc</button>
+        <button class="btn" id="btn-up">▲</button>
+        <button class="btn" id="btn-down">▼</button>
+        <button class="btn" id="btn-left">◀</button>
+        <button class="btn" id="btn-right">▶</button>
+    </div>
+
+    <script>
+        const termContainer = document.getElementById('terminal-container');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const modeBadge = document.getElementById('mode-badge');
+        const peersBar = document.getElementById('peers-bar');
+
+        // Session state — exposed on window for Playwright introspection.
+        window.isPipeMode = false;
+        let isPipeMode = false;
+        let ctrlActive = false;
+        let altActive = false;
+
+        function setPipeMode(val) {
+            isPipeMode = val;
+            window.isPipeMode = val;
+            modeBadge.classList.toggle('visible', val);
+            termContainer.classList.toggle('pipe-locked', val);
+        }
+
+        function updateStatus(text, active) {
+            statusText.textContent = text;
+            statusDot.classList.toggle('active', active);
+        }
+
+        const term = new Terminal({
+            cursorBlink: true,
+            theme: {
+                background: '#0c101f',
+                foreground: '#f3f4f6'
+            }
+        });
+        const fitAddon = new FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
+        term.open(termContainer);
+        fitAddon.fit();
+
+        window.addEventListener('resize', () => {
+            fitAddon.fit();
+            sendResizeFrame();
+        });
+
+        const clientId = 'client-' + Math.random().toString(36).substring(2, 11);
+        updateStatus('Connecting...', true);
+        const pc = new RTCPeerConnection({ iceServers: [] });
+
+        let dc = null;
+
+        function applyModifiers(data) {
+            // Apply Ctrl: map printable ASCII a-z to control characters \x01-\x1a
+            if (ctrlActive && altActive) {
+                ctrlActive = false;
+                altActive = false;
+                updateModifierButtons();
+                // Ctrl+Alt = escape prefix + control char
+                if (data.length === 1) {
+                    const code = data.charCodeAt(0);
+                    if (code >= 97 && code <= 122) {
+                        return '\x1b' + String.fromCharCode(code - 96);
+                    }
+                }
+                return '\x1b' + data;
+            }
+            if (ctrlActive) {
+                ctrlActive = false;
+                updateModifierButtons();
+                if (data.length === 1) {
+                    const code = data.charCodeAt(0);
+                    if (code >= 97 && code <= 122) {
+                        return String.fromCharCode(code - 96);
+                    }
+                    if (code >= 64 && code <= 95) {
+                        return String.fromCharCode(code - 64);
+                    }
+                }
+                return data;
+            }
+            if (altActive) {
+                altActive = false;
+                updateModifierButtons();
+                return '\x1b' + data;
+            }
+            return data;
+        }
+
+        function updateModifierButtons() {
+            document.getElementById('btn-ctrl').classList.toggle('modifier-active', ctrlActive);
+            document.getElementById('btn-alt').classList.toggle('modifier-active', altActive);
+        }
+
+        function sendResizeFrame() {
+            if (!dc || dc.readyState !== 'open') return;
+            const frame = '\x00AETHER:' + JSON.stringify({
+                type: 'resize',
+                cols: term.cols,
+                rows: term.rows
+            });
+            dc.send(frame);
+        }
+
+        pc.ondatachannel = (event) => {
+            dc = event.channel;
+            dc.onopen = () => {
+                updateStatus('Connected', true);
+                // Immediately advertise our real terminal dimensions to the host.
+                sendResizeFrame();
+            };
+            dc.onmessage = (e) => {
+                const data = e.data;
+                if (typeof data === 'string' && data.startsWith('\x00AETHER:')) {
+                    try {
+                        const payload = JSON.parse(data.substring(8));
+                        if (payload.type === 'resize') {
+                            term.resize(payload.cols, payload.rows);
+                        } else if (payload.type === 'presence') {
+                            // Render one colored pill per peer.
+                            peersBar.innerHTML = '';
+                            const colors = [
+                                '#3b82f6','#10b981','#f59e0b','#ec4899',
+                                '#8b5cf6','#06b6d4','#f97316','#84cc16'
+                            ];
+                            (payload.clients || []).forEach((c, i) => {
+                                const pill = document.createElement('div');
+                                pill.className = 'peer-pill';
+                                const dot = document.createElement('span');
+                                dot.className = 'peer-dot';
+                                dot.style.background = colors[i % colors.length];
+                                dot.style.boxShadow = `0 0 5px ${colors[i % colors.length]}`;
+                                pill.appendChild(dot);
+                                pill.appendChild(document.createTextNode(c.displayName || c));
+                                peersBar.appendChild(pill);
+                            });
+                        } else if (payload.type === 'eof') {
+                            updateStatus('Session ended (EOF)', false);
+                            setPipeMode(true); // lock input on EOF too
+                        } else if (payload.type === 'mode') {
+                            setPipeMode(payload.mode === 'pipe');
+                        }
+                    } catch (err) {
+                        console.error('Control frame parse error:', err);
+                    }
+                } else {
+                    term.write(data);
+                }
+            };
+            dc.onclose = () => updateStatus('Disconnected', false);
+        };
+
+        pc.onicecandidate = (event) => {
+            if (!event.candidate) {
+                fetch('/answer?id=' + clientId, {
+                    method: 'POST',
+                    body: pc.localDescription.sdp
+                }).catch(console.error);
+            }
+        };
+
+        fetch('/offer?id=' + clientId)
+            .then(res => res.text())
+            .then(sdp => pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp })))
+            .then(() => pc.createAnswer())
+            .then(answer => pc.setLocalDescription(answer))
+            .catch(err => updateStatus('Error: ' + err.message, false));
+
+        // Keyboard input — blocked in pipe mode
+        term.onData((data) => {
+            if (isPipeMode) return;
+            if (dc && dc.readyState === 'open') {
+                dc.send(applyModifiers(data));
+            }
+        });
+
+        // Toolbar: Ctrl/Alt toggle modifier state; others send keys directly
+        const sendKey = (key) => {
+            if (isPipeMode) return;
+            if (dc && dc.readyState === 'open') dc.send(key);
+        };
+
+        document.getElementById('btn-ctrl').onclick = () => {
+            if (isPipeMode) return;
+            ctrlActive = !ctrlActive;
+            updateModifierButtons();
+        };
+        document.getElementById('btn-alt').onclick = () => {
+            if (isPipeMode) return;
+            altActive = !altActive;
+            updateModifierButtons();
+        };
+        document.getElementById('btn-tab').onclick = () => sendKey(applyModifiers('\t'));
+        document.getElementById('btn-esc').onclick = () => sendKey('\x1b');
+        document.getElementById('btn-up').onclick = () => sendKey(applyModifiers('\x1b[A'));
+        document.getElementById('btn-down').onclick = () => sendKey(applyModifiers('\x1b[B'));
+        document.getElementById('btn-left').onclick = () => sendKey(applyModifiers('\x1b[D'));
+        document.getElementById('btn-right').onclick = () => sendKey(applyModifiers('\x1b[C'));
+    </script>
+</body>
+</html>

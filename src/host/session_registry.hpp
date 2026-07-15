@@ -1,0 +1,77 @@
+#pragma once
+#include <string>
+#include <vector>
+#include <memory>
+#include <chrono>
+#include <functional>
+#include <cstdint>
+#include <rtc/datachannel.hpp>
+
+/// Client permission levels.
+enum class Permission {
+    Owner,
+    Collaborator,
+    Observer
+};
+
+/// Terminal size specifications.
+struct TermSize {
+    uint16_t rows;
+    uint16_t cols;
+};
+
+/// Active peer client representation.
+struct Client {
+    std::string id;
+    std::string displayName;
+    std::string color;
+    Permission permission;
+    bool active;
+    TermSize termSize;
+    std::shared_ptr<rtc::DataChannel> channel;
+    std::chrono::steady_clock::time_point lastActivity;
+};
+
+/// Tracks active session peers.
+class SessionRegistry {
+public:
+    /// Creates the registry.
+    SessionRegistry(int ptyFd, int maxClientsVal);
+
+    /// Registers a client.
+    void addClient(const std::string& id, const std::string& name, Permission perm, std::shared_ptr<rtc::DataChannel> chan);
+
+    /// Unregisters a client.
+    void removeClient(const std::string& id);
+
+    /// Updates client size.
+    void updateClientSize(const std::string& id, TermSize size);
+
+    /// Broadcasts terminal output.
+    void broadcastOutput(std::string_view data);
+
+    /// Broadcasts control messages.
+    void broadcastControl(const std::string& msg);
+
+    /// Processes client input data.
+    void handleInput(const std::string& id, std::string_view data, std::function<void(std::string_view)> onPtyWrite);
+
+    /// Updates client activity.
+    void updateActivity(const std::string& id);
+
+    /// Checks inactive clients.
+    void checkInactivity();
+
+    /// Registers owner exit callback.
+    void onOwnerDisconnect(std::function<void()> cb);
+
+private:
+    TermSize calcLCDSize() const;
+    void applyLCDSize();
+    void broadcastPresence();
+
+    std::vector<Client> clients;
+    int pty;
+    int maxClients;
+    std::function<void()> ownerExitCallback;
+};

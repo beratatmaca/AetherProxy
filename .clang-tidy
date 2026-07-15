@@ -1,0 +1,29 @@
+# AetherProxy static analysis configuration.
+---
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*,
+  clang-analyzer-*,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -modernize-avoid-c-arrays,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-braces-around-statements,
+  -readability-implicit-bool-conversion,
+  -readability-named-parameter,
+  -readability-function-cognitive-complexity,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -readability-redundant-access-specifiers,
+  -readability-suspicious-call-argument,
+  -readability-convert-member-functions-to-static,
+  -clang-analyzer-cplusplus.NewDeleteLeaks,
+  -clang-analyzer-cplusplus.NewDelete
+
+WarningsAsErrors: "*"
+HeaderFilterRegex: '.*/src/.*\.(h|hpp)$'
+FormatStyle: file

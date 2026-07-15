@@ -1,0 +1,84 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 16,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "gcc-debug",
+      "displayName": "GCC Debug",
+      "description": "Configure with GCC (Debug mode)",
+      "binaryDir": "${sourceDir}/build-gcc-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON"
+      },
+      "environment": {
+        "CC": "gcc",
+        "CXX": "g++"
+      }
+    },
+    {
+      "name": "clang-debug",
+      "displayName": "Clang Debug",
+      "description": "Configure with Clang (Debug mode)",
+      "binaryDir": "${sourceDir}/build-clang-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON"
+      },
+      "environment": {
+        "CC": "clang",
+        "CXX": "clang++"
+      }
+    },
+    {
+      "name": "gcc-release",
+      "displayName": "GCC Release",
+      "description": "Configure with GCC (Release mode)",
+      "binaryDir": "${sourceDir}/build-gcc-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "OFF"
+      },
+      "environment": {
+        "CC": "gcc",
+        "CXX": "g++"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "gcc-debug",
+      "configurePreset": "gcc-debug"
+    },
+    {
+      "name": "clang-debug",
+      "configurePreset": "clang-debug"
+    },
+    {
+      "name": "gcc-release",
+      "configurePreset": "gcc-release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "gcc-debug",
+      "configurePreset": "gcc-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "clang-debug",
+      "configurePreset": "clang-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
