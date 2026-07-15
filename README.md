@@ -30,14 +30,14 @@ curl -fsSL https://raw.githubusercontent.com/beratatmaca/AetherProxy/main/tools/
 # Share your shell
 aetherproxy
 
-# Share one command
-aetherproxy -- htop
-
 # Stream logs, read only
 tail -f app.log | aetherproxy
 
 # Join from another machine
 aetherproxy connect fox-river-stone-48291
+
+# Record while you share
+aetherproxy --record demo.cast
 ```
 
 ## Features
@@ -45,11 +45,11 @@ aetherproxy connect fox-river-stone-48291
 - Zero setup. One command.
 - No account. No cloud.
 - Works offline on your LAN.
-- Full TUI apps: vim, htop, tmux.
-- Read-only pipe streaming.
-- Multiple viewers, live presence.
-- Encrypted end to end.
 - One static binary.
+- Full TUI apps: vim, htop, tmux.
+- Many viewers. You approve each one.
+- Late joiners see the scrollback.
+- Encrypted end to end.
 
 ## License
 

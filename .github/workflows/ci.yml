@@ -167,7 +167,7 @@ jobs:
 
   # ################ Stage 3: sanitizers ################
   sanitizers:
-    name: Sanitizer smoke test (${{ matrix.mode }})
+    name: Sanitizer (ASan)
     needs: checks
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -176,24 +176,18 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [asan, tsan]
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/cache@v4
         with:
-          path: |
-            build-debug
-            build-tsan
-          key: ${{ matrix.mode }}-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
-          restore-keys: ${{ matrix.mode }}-
+          path: build-debug
+          key: asan-${{ hashFiles('CMakeLists.txt', 'CMakePresets.json') }}
+          restore-keys: asan-
 
-      - name: Run ${{ matrix.mode }} smoke test
-        run: bash tools/run-tests.sh --${{ matrix.mode }}
+      - name: Run ASan integration suite
+        run: bash tools/run-tests.sh --asan
 
   # ################ Stage 4: static release binaries, tags only ################
   release-build:

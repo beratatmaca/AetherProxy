@@ -342,6 +342,49 @@ async function testOfflineMode() {
     }
 }
 
+/**
+ * T-23  Asciicast recording.
+ *
+ * --record writes an asciicast v2 file: a JSON header line with
+ * dimensions, then [offset, "o", data] event lines that capture
+ * shell output in order.
+ */
+async function testAsciicastRecording() {
+    const castPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'aether-cast-')), 'session.cast');
+    const { proc, getStdout } = await spawnHost(['--record', castPath]);
+    try {
+        assert.ok(
+            await waitUntil(() => getStdout().includes('Recording to')),
+            'Host must announce the recording',
+        );
+        await wait(1000);
+        proc.stdin.write('echo cast_$((70+7))\r');
+        assert.ok(await waitUntil(() => getStdout().includes('cast_77')), 'Shell output must echo');
+        await killHost(proc);
+
+        const lines = fs.readFileSync(castPath, 'utf8').trim().split('\n');
+        assert.ok(lines.length >= 2, 'Cast file must have a header and events');
+        const header = JSON.parse(lines[0]);
+        assert.strictEqual(header.version, 2, 'Header version must be 2');
+        assert.ok(header.width > 0 && header.height > 0, 'Header must carry dimensions');
+        let output = '';
+        let lastOffset = -1;
+        for (const line of lines.slice(1)) {
+            const ev = JSON.parse(line);
+            assert.ok(Array.isArray(ev) && ev.length === 3, 'Events must be triples');
+            assert.ok(typeof ev[0] === 'number' && ev[0] >= lastOffset, 'Offsets must not decrease');
+            assert.strictEqual(ev[1], 'o', 'Only output events expected');
+            lastOffset = ev[0];
+            output += ev[2];
+        }
+        assert.ok(output.includes('cast_77'), 'Recording must contain the shell output');
+
+        console.log('  [T-23] Asciicast recording ✓ —', lines.length - 1, 'events');
+    } finally {
+        await killHost(proc);
+    }
+}
+
 // ################ BROWSER-SIDE binary tests ################
 
 /**
@@ -908,8 +951,8 @@ async function testAdmissionGate(browserType, browserName) {
             { timeout: 5_000 },
         );
 
-        // Pending keystrokes never reach the shell.
-        await pageA.click('#terminal-container');
+        // Pending keystrokes never reach the shell. The container is
+        // pointer-locked while pending, so focus the textarea directly.
         await pageA.evaluate(() => document.querySelector('.xterm-helper-textarea')?.focus());
         await pageA.keyboard.type('PENDINGXYZ');
         await wait(700);
@@ -963,6 +1006,7 @@ const BINARY_TESTS = [
     { name: 'T-03  QR code in output',       fn: testQrCodeInOutput   },
     { name: 'T-14  Config subcommand',       fn: testConfigCommand    },
     { name: 'T-15  Offline mode',            fn: testOfflineMode      },
+    { name: 'T-23  Asciicast recording',     fn: testAsciicastRecording },
 ];
 
 const BROWSER_TESTS = [

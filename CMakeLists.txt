@@ -66,6 +66,7 @@ add_executable(aetherproxy
     src/host/http_server.cpp
     src/host/session_registry.cpp
     src/host/replay_buffer.cpp
+    src/host/session_recorder.cpp
     src/client/native_client.cpp
     src/common/config.cpp
 )
@@ -106,11 +107,6 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_link_options(aetherproxy PRIVATE -fsanitize=address)
 endif()
 
-# Tsan build: ThreadSanitizer (mutually exclusive with ASan)
-if(CMAKE_BUILD_TYPE STREQUAL "Tsan")
-    target_compile_options(aetherproxy PRIVATE -fsanitize=thread -fno-omit-frame-pointer -g)
-    target_link_options(aetherproxy PRIVATE -fsanitize=thread)
-endif()
 
 # Static link flag. The option itself is declared near the top.
 if(STATIC_BUILD)

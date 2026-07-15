@@ -29,6 +29,8 @@ struct CLIConfig {
     int idleTimeout = 3600;
     /// Ask before linking client input to the PTY.
     bool admit = true;
+    /// Asciicast v2 output path. Empty disables recording.
+    std::string recordPath;
 };
 
 /// Parses config file then command line flags.

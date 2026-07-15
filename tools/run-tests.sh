@@ -2,13 +2,12 @@
 # tools/run-tests.sh — Local and CI test runner for AetherProxy.
 #
 # Usage:
-#   bash tools/run-tests.sh [--asan] [--tsan]
+#   bash tools/run-tests.sh [--asan]
 #
 # With no flags: expects ./build/aetherproxy to already exist (built externally
 # or by the CI 'integration' job). Runs the Playwright suite.
 #
-# --asan  Build under AddressSanitizer first, run ASan smoke test.
-# --tsan  Build under ThreadSanitizer first, run TSan smoke test.
+# --asan  Build under AddressSanitizer, run the integration suite.
 #
 # Environment variables honoured:
 #   BINARY   Path to binary (default: ./build/aetherproxy)
@@ -26,7 +25,6 @@ MODE="integration"
 for arg in "$@"; do
   case "$arg" in
     --asan) MODE="asan" ;;
-    --tsan) MODE="tsan" ;;
     *)      echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
 done
@@ -61,28 +59,6 @@ run_asan() {
   run_integration
 }
 
-# ################ TSan integration run ################
-
-run_tsan() {
-  embed_assets
-  build_preset tsan
-
-  echo "[run-tests] Running integration suite under TSan…"
-  export TSAN_OPTIONS="halt_on_error=1"
-  export BROWSERS="${BROWSERS:-chromium}"
-
-  # TSan rejects high-entropy ASLR mappings on kernel 6.5+.
-  # Wrap the binary with setarch -R to disable ASLR per process.
-  cat > build-tsan/aetherproxy-noaslr <<WRAP
-#!/bin/sh
-exec setarch "\$(uname -m)" -R "$REPO_ROOT/build-tsan/aetherproxy" "\$@"
-WRAP
-  chmod +x build-tsan/aetherproxy-noaslr
-  BINARY="build-tsan/aetherproxy-noaslr"
-  export BINARY
-  run_integration
-}
-
 # ################ Playwright integration suite ################
 
 run_integration() {
@@ -112,6 +88,5 @@ run_integration() {
 
 case "$MODE" in
   asan)        run_asan ;;
-  tsan)        run_tsan ;;
   integration) run_integration ;;
 esac

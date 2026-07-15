@@ -30,6 +30,7 @@
 #include "host/http_server.hpp"
 #include "host/session_registry.hpp"
 #include "host/replay_buffer.hpp"
+#include "host/session_recorder.hpp"
 #include <deque>
 #include "client/native_client.hpp"
 
@@ -341,6 +342,22 @@ int main(int argc, char *argv[]) {
         ptyFd = std::static_pointer_cast<PTYSource>(io)->getFd();
     }
     SessionRegistry registry(ptyFd, config.maxClients);
+
+    SessionRecorder recorder;
+    if (!config.recordPath.empty()) {
+        struct winsize recWs {};
+        uint16_t recCols = 80;
+        uint16_t recRows = 24;
+        if (isatty(STDOUT_FILENO) != 0 && ioctl(STDOUT_FILENO, TIOCGWINSZ, &recWs) == 0 && recWs.ws_col > 0 && recWs.ws_row > 0) {
+            recCols = recWs.ws_col;
+            recRows = recWs.ws_row;
+        }
+        if (!recorder.start(config.recordPath, recCols, recRows)) {
+            std::cerr << "Cannot write recording: " << config.recordPath << "\n";
+            return 1;
+        }
+        std::cout << "Recording to " << config.recordPath << "\n" << std::flush;
+    }
 
     std::atomic<bool> running{true};
 
@@ -687,6 +704,7 @@ int main(int argc, char *argv[]) {
                         writeFull(STDOUT_FILENO, buf, static_cast<size_t>(n));
                     }
                     replay.append(std::string_view(buf, static_cast<size_t>(n)));
+                    recorder.record(std::string_view(buf, static_cast<size_t>(n)));
                 } else if (n == 0 && mode == SessionMode::Pipe) {
                     registry.broadcastControl(std::string(R"({"type":"eof"})"));
                     eofSeen = true;
@@ -705,6 +723,7 @@ int main(int argc, char *argv[]) {
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
+    recorder.stop();
     server.stop();
     if (serverThread.joinable()) {
         serverThread.join();

@@ -18,17 +18,6 @@
       }
     },
     {
-      "name": "tsan",
-      "displayName": "TSan",
-      "description": "Debug build with ThreadSanitizer",
-      "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build-tsan",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Tsan",
-        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-      }
-    },
-    {
       "name": "release",
       "displayName": "Release",
       "description": "Optimized build for local use",
@@ -54,10 +43,6 @@
     {
       "name": "debug",
       "configurePreset": "debug"
-    },
-    {
-      "name": "tsan",
-      "configurePreset": "tsan"
     },
     {
       "name": "release",

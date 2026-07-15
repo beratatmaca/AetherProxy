@@ -237,6 +237,12 @@ CLIConfig parseCLIArgs(int argc, char *argv[]) {
         }
         if (arg == "--offline") {
             config.offline = true;
+        } else if (arg == "--record") {
+            if (i + 1 >= argc || std::string_view(argv[i + 1]) == "--") {
+                std::cerr << "--record needs a file path\n";
+                std::exit(1);
+            }
+            config.recordPath = argv[++i];
         } else if (arg.starts_with("--")) {
             std::cerr << "Unknown flag: " << arg << "\n"
                       << "Settings live in: aetherproxy config\n";
@@ -278,6 +284,7 @@ void printUsage() {
                  "  help               Show this help.\n"
                  "  version            Show version.\n"
                  "  --offline          One run with no external servers.\n"
+                 "  --record <file>    Save the session as asciicast v2.\n"
                  "\n"
                  "Config:\n"
                  "  aetherproxy config list\n"
