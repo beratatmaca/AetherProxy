@@ -27,6 +27,8 @@ struct CLIConfig {
     std::string signalingUrl;
     /// Seconds without clients before shutdown. Zero disables.
     int idleTimeout = 3600;
+    /// Ask before linking client input to the PTY.
+    bool admit = true;
 };
 
 /// Parses config file then command line flags.

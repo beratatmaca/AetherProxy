@@ -1,6 +1,7 @@
 #include "host/http_server.hpp"
 #include "common/embedded_assets.hpp"
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <sstream>
@@ -10,14 +11,16 @@
 #include <algorithm>
 
 static std::string queryParam(const std::string &request, const std::string &key) {
+    size_t lineEnd = request.find("\r\n");
+    std::string line = request.substr(0, lineEnd);
     std::string marker = key + "=";
-    size_t pos = request.find(marker);
+    size_t pos = line.find(marker);
     if (pos == std::string::npos) {
         return "";
     }
     size_t start = pos + marker.size();
-    size_t end = std::min(request.find(' ', start), request.find('&', start));
-    return request.substr(start, end - start);
+    size_t end = std::min(line.find(' ', start), line.find('&', start));
+    return line.substr(start, end - start);
 }
 
 static std::string urlDecode(const std::string &text) {
@@ -135,6 +138,11 @@ void HttpServer::run(const std::function<std::string(std::string, std::string)> 
                 break;
             continue;
         }
+
+        struct timeval rcvTimeout {
+            .tv_sec = 5, .tv_usec = 0
+        };
+        setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &rcvTimeout, sizeof(rcvTimeout));
 
         char buffer[4096] = {0};
         ssize_t bytesRead = read(clientFd, buffer, sizeof(buffer) - 1);

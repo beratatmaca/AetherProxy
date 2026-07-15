@@ -12,7 +12,7 @@ SessionRegistry::SessionRegistry(int ptyFd, int maxClientsVal) : pty(ptyFd) {
     maxClients = std::min(maxClientsVal, 32);
 }
 
-void SessionRegistry::addClient(const std::string &id, const std::string &name, Permission perm,
+bool SessionRegistry::addClient(const std::string &id, const std::string &name, Permission perm,
                                 const std::shared_ptr<rtc::DataChannel> &chan) {
     if (clients.size() >= static_cast<size_t>(maxClients)) {
         if (chan && chan->isOpen()) {
@@ -25,9 +25,16 @@ void SessionRegistry::addClient(const std::string &id, const std::string &name, 
             chan->send(errStr);
             chan->close();
         }
-        return;
+        return false;
     }
-    const std::string &color = COLORS[clients.size() % COLORS.size()];
+    std::string color = COLORS[clients.size() % COLORS.size()];
+    for (const auto &candidate : COLORS) {
+        bool used = std::ranges::any_of(clients, [&](const Client &c) { return c.color == candidate; });
+        if (!used) {
+            color = candidate;
+            break;
+        }
+    }
     Client client{.id = id,
                   .displayName = name,
                   .color = color,
@@ -35,10 +42,12 @@ void SessionRegistry::addClient(const std::string &id, const std::string &name, 
                   .active = true,
                   .termSize = {.rows = 24, .cols = 80},
                   .channel = chan,
-                  .lastActivity = std::chrono::steady_clock::now()};
+                  .lastActivity = std::chrono::steady_clock::now(),
+                  .lastLockNotify = {}};
     clients.push_back(client);
     applyLCDSize();
     broadcastPresence();
+    return true;
 }
 
 void SessionRegistry::removeClient(const std::string &id) {
@@ -47,10 +56,38 @@ void SessionRegistry::removeClient(const std::string &id) {
     broadcastPresence();
 }
 
+void SessionRegistry::setPermission(const std::string &id, Permission perm) {
+    for (auto &client : clients) {
+        if (client.id == id) {
+            client.permission = perm;
+            broadcastPresence();
+            break;
+        }
+    }
+}
+
+void SessionRegistry::kickClient(const std::string &id, const std::string &reason) {
+    for (auto &client : clients) {
+        if (client.id == id) {
+            if (client.channel && client.channel->isOpen()) {
+                json msg = {{"type", "error"}, {"message", reason}};
+                client.channel->send(std::string("\x00"
+                                                 "AETHER:",
+                                                 8) +
+                                     msg.dump());
+                client.channel->close();
+            }
+            break;
+        }
+    }
+    removeClient(id);
+}
+
 void SessionRegistry::updateClientSize(const std::string &id, TermSize size) {
     for (auto &client : clients) {
         if (client.id == id) {
             client.termSize = size;
+            client.sized = true;
             break;
         }
     }
@@ -85,7 +122,7 @@ void SessionRegistry::handleInput(const std::string &id, std::string_view data, 
         if (client.id != id) {
             continue;
         }
-        if (client.permission == Permission::Observer) {
+        if (client.permission != Permission::Collaborator) {
             return;
         }
         if (id != writerId && !writerId.empty()) {
@@ -168,6 +205,9 @@ TermSize SessionRegistry::calcLCDSize() const {
     uint16_t rows = baseSize.rows;
     uint16_t cols = baseSize.cols;
     for (const auto &client : clients) {
+        if (!client.sized) {
+            continue;
+        }
         rows = std::min(rows, client.termSize.rows);
         cols = std::min(cols, client.termSize.cols);
     }
@@ -189,7 +229,12 @@ void SessionRegistry::applyLCDSize() {
 void SessionRegistry::broadcastPresence() {
     json list = json::array();
     for (const auto &client : clients) {
-        std::string permStr = client.permission == Permission::Collaborator ? "collaborator" : "observer";
+        std::string permStr = "pending";
+        if (client.permission == Permission::Collaborator) {
+            permStr = "collaborator";
+        } else if (client.permission == Permission::Observer) {
+            permStr = "observer";
+        }
         list.push_back({{"id", client.id},
                         {"displayName", client.displayName},
                         {"permission", permStr},

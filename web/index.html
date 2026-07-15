@@ -318,6 +318,7 @@
         let isPipeMode = false;
         let sessionMode = 'terminal';
         let isObserver = false;
+        let isPending = false;
         let sessionEnded = false;
         let ctrlActive = false;
         let altActive = false;
@@ -325,13 +326,14 @@
         const badgeText = document.getElementById('mode-badge-text');
 
         function inputLocked() {
-            return isPipeMode || isObserver || sessionEnded;
+            return isPipeMode || isObserver || isPending || sessionEnded;
         }
 
         function refreshBadge() {
             let label = '';
             if (sessionEnded) label = 'Session ended';
             else if (isPipeMode) label = 'Pipe Mode · Read Only';
+            else if (isPending) label = 'Waiting for approval';
             else if (isObserver) label = 'Observer · Read Only';
             if (label) badgeText.textContent = label;
             modeBadge.classList.toggle('visible', label !== '');
@@ -447,9 +449,26 @@
             dc.send(frame);
         }
 
+        // ICE servers ride the URL: local mode needs none, the interactive
+        // launcher forwards the host's saved STUN/TURN config.
+        function iceConfig() {
+            const iceServers = [];
+            (urlParams.get('stun') || '').split(',').filter(Boolean)
+                .forEach((u) => iceServers.push({ urls: u }));
+            const turnUrl = urlParams.get('turn') || '';
+            if (turnUrl) {
+                iceServers.push({
+                    urls: turnUrl,
+                    username: urlParams.get('turnUser') || '',
+                    credential: urlParams.get('turnPass') || ''
+                });
+            }
+            return { iceServers };
+        }
+
         function startSession() {
             updateStatus('Connecting...', true);
-            pc = new RTCPeerConnection({ iceServers: [] });
+            pc = new RTCPeerConnection(iceConfig());
 
             pc.ondatachannel = (event) => {
             dc = event.channel;
@@ -488,6 +507,7 @@
                             });
                             const me = (payload.clients || []).find(c => c.id === clientId);
                             isObserver = !!(me && me.permission === 'observer');
+                            isPending = !!(me && me.permission === 'pending');
                             refreshBadge();
                         } else if (payload.type === 'eof') {
                             updateStatus('Session ended (EOF)', false);
@@ -500,6 +520,9 @@
                             if (pc) pc.close();
                         } else if (payload.type === 'mode') {
                             setSessionMode(payload.mode);
+                        } else if (payload.type === 'error') {
+                            endSession(payload.message || 'Rejected');
+                            if (pc) pc.close();
                         } else if (payload.type === 'locked') {
                             showLockBadge(payload.by);
                         }

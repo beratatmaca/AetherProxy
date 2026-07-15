@@ -1,6 +1,8 @@
+#!/usr/bin/env node
 const { WebSocketServer } = require('ws');
 
-const wss = new WebSocketServer({ port: 8080 });
+const port = Number(process.env.PORT) || 8080;
+const wss = new WebSocketServer({ port });
 const rooms = new Map();
 
 wss.on('connection', (ws) => {
@@ -39,4 +41,4 @@ wss.on('connection', (ws) => {
         }
     });
 });
-console.log('Mock signaling server running on port 8080');
+console.log(`AetherProxy signaling server running on port ${port}`);

@@ -3,6 +3,7 @@
 #include <memory>
 #include <chrono>
 #include <cstdint>
+#include "common/config.hpp"
 #include "common/webrtc_session.hpp"
 #include "common/signaling_client.hpp"
 #include "common/event_queue.hpp"
@@ -17,7 +18,7 @@ public:
     ~NativeClient();
 
     /// Connects to a remote room.
-    void connect(const std::string &signalingUrl, const std::string &roomCode);
+    void connect(const CLIConfig &config, const std::string &roomCode);
 
     /// Starts bridging loop.
     void run();
@@ -31,6 +32,8 @@ private:
     std::shared_ptr<WebRTCSession> session;
     EventQueue eq;
     std::string peers;
+    std::string myId;
+    bool pendingApproval = false;
     std::string lockedBy;
     std::chrono::steady_clock::time_point lockedAt;
     std::string outBuf;

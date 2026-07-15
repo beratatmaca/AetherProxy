@@ -46,50 +46,41 @@ build_preset() {
   cmake --build --preset "$preset" --parallel "$(nproc)"
 }
 
-# ################ ASan smoke test ################
+# ################ ASan integration run ################
 
 run_asan() {
   embed_assets
   build_preset debug
 
-  echo "[run-tests] Running ASan smoke test…"
-  local out tmphome
-  tmphome=$(mktemp -d)
-  HOME="$tmphome" build-debug/aetherproxy config set port "$((PORT + 1))" > /dev/null
-  HOME="$tmphome" build-debug/aetherproxy config set offline true > /dev/null
-  out=$(ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 HOME="$tmphome" \
-        timeout 4 build-debug/aetherproxy 2>&1 || true)
-  echo "$out"
-
-  if echo "$out" | grep -qE '[a-z]+-[a-z]+-[a-z]+-[0-9]{5}'; then
-    echo "[run-tests] ✓ ASan smoke test passed — no heap errors detected."
-  else
-    echo "[run-tests] ✗ ASan binary did not emit a room code (possible ASan abort)." >&2
-    exit 1
-  fi
+  echo "[run-tests] Running integration suite under ASan…"
+  export ASAN_OPTIONS="detect_leaks=1:abort_on_error=1"
+  export LSAN_OPTIONS="suppressions=$REPO_ROOT/tools/lsan.supp"
+  export BROWSERS="${BROWSERS:-chromium}"
+  BINARY="build-debug/aetherproxy"
+  export BINARY
+  run_integration
 }
 
-# ################ TSan smoke test ################
+# ################ TSan integration run ################
 
 run_tsan() {
   embed_assets
   build_preset tsan
 
-  echo "[run-tests] Running TSan smoke test…"
-  local out tmphome
-  tmphome=$(mktemp -d)
-  HOME="$tmphome" build-tsan/aetherproxy config set port "$((PORT + 2))" > /dev/null
-  HOME="$tmphome" build-tsan/aetherproxy config set offline true > /dev/null
-  out=$(TSAN_OPTIONS=halt_on_error=1 HOME="$tmphome" \
-        timeout 4 build-tsan/aetherproxy 2>&1 || true)
-  echo "$out"
+  echo "[run-tests] Running integration suite under TSan…"
+  export TSAN_OPTIONS="halt_on_error=1"
+  export BROWSERS="${BROWSERS:-chromium}"
 
-  if echo "$out" | grep -qE '[a-z]+-[a-z]+-[a-z]+-[0-9]{5}'; then
-    echo "[run-tests] ✓ TSan smoke test passed — no data races detected."
-  else
-    echo "[run-tests] ✗ TSan binary did not emit a room code (possible TSan abort)." >&2
-    exit 1
-  fi
+  # TSan rejects high-entropy ASLR mappings on kernel 6.5+.
+  # Wrap the binary with setarch -R to disable ASLR per process.
+  cat > build-tsan/aetherproxy-noaslr <<WRAP
+#!/bin/sh
+exec setarch "\$(uname -m)" -R "$REPO_ROOT/build-tsan/aetherproxy" "\$@"
+WRAP
+  chmod +x build-tsan/aetherproxy-noaslr
+  BINARY="build-tsan/aetherproxy-noaslr"
+  export BINARY
+  run_integration
 }
 
 # ################ Playwright integration suite ################
@@ -100,8 +91,12 @@ run_integration() {
     exit 1
   fi
 
-  # Stale hosts from an aborted run poison the port. Sweep first.
-  pkill -9 -x aetherproxy 2>/dev/null || true
+  # Stale hosts from an aborted run poison the port. Sweep the test
+  # port only. Never kill unrelated aetherproxy sessions.
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k -TERM "${PORT}/tcp" 2>/dev/null || true
+    sleep 0.5
+  fi
 
   # Ensure Playwright browsers are installed.
   if ! (cd tests && npx playwright --version &>/dev/null); then

@@ -29,6 +29,8 @@
 #include "common/banner.hpp"
 #include "host/http_server.hpp"
 #include "host/session_registry.hpp"
+#include "host/replay_buffer.hpp"
+#include <deque>
 #include "client/native_client.hpp"
 
 enum class SessionMode : std::uint8_t { Terminal, Command, Pipe, Client, Interactive };
@@ -202,8 +204,24 @@ static int runInteractiveClient(const CLIConfig &config, const std::string &room
         });
     });
 
+    std::string iceParams;
+    if (!config.noStun && !config.stunServers.empty()) {
+        std::string joined;
+        for (const auto &s : config.stunServers) {
+            if (!joined.empty()) {
+                joined += ",";
+            }
+            joined += s;
+        }
+        iceParams += "&stun=" + urlEncode(joined);
+    }
+    if (!config.noTurn && !config.turnServers.empty()) {
+        iceParams += "&turn=" + urlEncode(config.turnServers.front());
+        iceParams += "&turnUser=" + urlEncode(config.turnUser);
+        iceParams += "&turnPass=" + urlEncode(config.turnPass);
+    }
     std::string url = "http://127.0.0.1:" + std::to_string(server.boundPort()) + "/?signal=" + urlEncode(config.signalingUrl) +
-                      "&interactive=1&name=" + urlEncode(localUserName()) + "#" + room;
+                      "&interactive=1&name=" + urlEncode(localUserName()) + iceParams + "#" + room;
     std::cout << "Opening browser: " << url << "\n" << std::flush;
     launchBrowser(url);
 
@@ -271,7 +289,7 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         NativeClient client;
-        client.connect(config.signalingUrl, argv[2]);
+        client.connect(config, argv[2]);
         client.run();
         return 0;
     }
@@ -348,11 +366,22 @@ int main(int argc, char *argv[]) {
                 }
                 auto session = std::make_shared<WebRTCSession>();
                 session->initialize(config.stunServers, config.turnServers, config.turnUser, config.turnPass, config.noStun, config.noTurn);
-                session->onOpen(
-                    [&eq, clientId, name, session]() { eq.push(Event{.type=Event::Type::Join, .clientId=clientId, .clientName=name, .data="", .channel=session->getChannel()}); });
-                session->onMessage(
-                    [&eq, clientId](std::string msg) { eq.push(Event{.type=Event::Type::Message, .clientId=clientId, .clientName="", .data=std::move(msg), .channel=nullptr}); });
-                session->onDisconnect([&eq, clientId]() { eq.push(Event{.type=Event::Type::Disconnect, .clientId=clientId, .clientName="", .data="", .channel=nullptr}); });
+                std::weak_ptr<WebRTCSession> weakSession = session;
+                session->onOpen([&eq, clientId, name, weakSession]() {
+                    auto s = weakSession.lock();
+                    if (!s) {
+                        return;
+                    }
+                    eq.push(
+                        Event{.type = Event::Type::Join, .clientId = clientId, .clientName = name, .data = "", .channel = s->getChannel()});
+                });
+                session->onMessage([&eq, clientId](std::string msg) {
+                    eq.push(Event{
+                        .type = Event::Type::Message, .clientId = clientId, .clientName = "", .data = std::move(msg), .channel = nullptr});
+                });
+                session->onDisconnect([&eq, clientId]() {
+                    eq.push(Event{.type = Event::Type::Disconnect, .clientId = clientId, .clientName = "", .data = "", .channel = nullptr});
+                });
                 sessions[clientId] = session;
                 return session->createOffer();
             },
@@ -365,7 +394,6 @@ int main(int argc, char *argv[]) {
             });
         running = false;
     });
-    serverThread.detach();
 
     std::shared_ptr<SignalingClient> sigClient;
     if (!config.signalingUrl.empty()) {
@@ -395,11 +423,22 @@ int main(int argc, char *argv[]) {
 
                 auto session = std::make_shared<WebRTCSession>();
                 session->initialize(config.stunServers, config.turnServers, config.turnUser, config.turnPass, config.noStun, config.noTurn);
-                session->onOpen(
-                    [&eq, clientId, name, session]() { eq.push(Event{.type=Event::Type::Join, .clientId=clientId, .clientName=name, .data="", .channel=session->getChannel()}); });
-                session->onMessage(
-                    [&eq, clientId](std::string msg) { eq.push(Event{.type=Event::Type::Message, .clientId=clientId, .clientName="", .data=std::move(msg), .channel=nullptr}); });
-                session->onDisconnect([&eq, clientId]() { eq.push(Event{.type=Event::Type::Disconnect, .clientId=clientId, .clientName="", .data="", .channel=nullptr}); });
+                std::weak_ptr<WebRTCSession> weakSession = session;
+                session->onOpen([&eq, clientId, name, weakSession]() {
+                    auto s = weakSession.lock();
+                    if (!s) {
+                        return;
+                    }
+                    eq.push(
+                        Event{.type = Event::Type::Join, .clientId = clientId, .clientName = name, .data = "", .channel = s->getChannel()});
+                });
+                session->onMessage([&eq, clientId](std::string msg) {
+                    eq.push(Event{
+                        .type = Event::Type::Message, .clientId = clientId, .clientName = "", .data = std::move(msg), .channel = nullptr});
+                });
+                session->onDisconnect([&eq, clientId]() {
+                    eq.push(Event{.type = Event::Type::Disconnect, .clientId = clientId, .clientName = "", .data = "", .channel = nullptr});
+                });
                 sessions[clientId] = session;
 
                 std::string offer = session->createOffer();
@@ -454,7 +493,7 @@ int main(int argc, char *argv[]) {
     if (localTty) {
         struct winsize hostWs {};
         if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &hostWs) == 0) {
-            registry.setBaseSize({.rows=hostWs.ws_row, .cols=hostWs.ws_col});
+            registry.setBaseSize({.rows = hostWs.ws_row, .cols = hostWs.ws_col});
         }
         winchFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
         host_winch_fd = winchFd;
@@ -475,10 +514,46 @@ int main(int argc, char *argv[]) {
 
     auto lastInactivityCheck = std::chrono::steady_clock::now();
 
-    std::string pipeBacklog;
+    ReplayBuffer replay(2U << 20U);
     bool eofSeen = false;
-    constexpr size_t kBacklogMax = 1U << 20U;
     constexpr size_t kReplayChunk = 16384;
+
+    const bool admissionGate = config.admit && localTty && mode != SessionMode::Pipe;
+    std::deque<std::pair<std::string, std::string>> admitQueue;
+    std::string awaitingAdmit;
+
+    auto promptAdmit = [&admitQueue, &awaitingAdmit]() {
+        if (!awaitingAdmit.empty() || admitQueue.empty()) {
+            return;
+        }
+        awaitingAdmit = admitQueue.front().first;
+        std::string prompt = "\r\n[AetherProxy: Connection request from " + admitQueue.front().second + ". Accept? Y/n] ";
+        writeFull(STDOUT_FILENO, prompt.data(), prompt.size());
+    };
+
+    auto resolveAdmit = [&](bool accepted) {
+        if (accepted) {
+            registry.setPermission(awaitingAdmit, Permission::Collaborator);
+            writeFull(STDOUT_FILENO, "accepted\r\n", 10);
+        } else {
+            registry.kickClient(awaitingAdmit, "rejected by host");
+            std::lock_guard<std::mutex> lock(sessionsMutex);
+            sessions.erase(awaitingAdmit);
+            writeFull(STDOUT_FILENO, "rejected\r\n", 10);
+        }
+        admitQueue.pop_front();
+        awaitingAdmit.clear();
+        promptAdmit();
+    };
+
+    auto dropPending = [&](const std::string &id) {
+        std::erase_if(admitQueue, [&](const auto &entry) { return entry.first == id; });
+        if (awaitingAdmit == id) {
+            writeFull(STDOUT_FILENO, "gone\r\n", 6);
+            awaitingAdmit.clear();
+            promptAdmit();
+        }
+    };
 
     auto lastClientSeen = std::chrono::steady_clock::now();
 
@@ -503,7 +578,21 @@ int main(int argc, char *argv[]) {
                 char buf[1024];
                 ssize_t n = read(STDIN_FILENO, buf, sizeof(buf));
                 if (n > 0) {
-                    io->write(buf, static_cast<size_t>(n));
+                    if (!awaitingAdmit.empty()) {
+                        for (ssize_t k = 0; k < n; ++k) {
+                            char c = buf[k];
+                            if (c == 'y' || c == 'Y' || c == '\r' || c == '\n') {
+                                resolveAdmit(true);
+                                break;
+                            }
+                            if (c == 'n' || c == 'N') {
+                                resolveAdmit(false);
+                                break;
+                            }
+                        }
+                    } else {
+                        io->write(buf, static_cast<size_t>(n));
+                    }
                 } else if (n == 0) {
                     epoll_ctl(epollFd, EPOLL_CTL_DEL, STDIN_FILENO, nullptr);
                 }
@@ -513,7 +602,7 @@ int main(int argc, char *argv[]) {
                 (void)r;
                 struct winsize hostWs {};
                 if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &hostWs) == 0) {
-                    registry.setBaseSize({.rows=hostWs.ws_row, .cols=hostWs.ws_col});
+                    registry.setBaseSize({.rows = hostWs.ws_row, .cols = hostWs.ws_col});
                 }
             } else if (events[i].data.fd == eq.getFd()) {
                 uint64_t val = 0;
@@ -524,22 +613,28 @@ int main(int argc, char *argv[]) {
                         break;
                     }
                     if (evItem.type == Event::Type::Join) {
-                        Permission perm = mode == SessionMode::Pipe ? Permission::Observer : Permission::Collaborator;
+                        Permission perm = Permission::Collaborator;
+                        if (mode == SessionMode::Pipe) {
+                            perm = Permission::Observer;
+                        } else if (admissionGate) {
+                            perm = Permission::Pending;
+                        }
                         std::string name = sanitizeName(evItem.clientName);
                         if (name.empty()) {
                             name = evItem.clientId;
                         }
-                        registry.addClient(evItem.clientId, name, perm, evItem.channel);
+                        bool added = registry.addClient(evItem.clientId, name, perm, evItem.channel);
                         std::string modeStr = mode == SessionMode::Pipe ? "pipe" : "terminal";
                         std::string modeFrame = std::string(
                                                     "\x00"
                                                     "AETHER:",
                                                     8) +
                                                 R"({"type":"mode","mode":")" + modeStr + R"("})";
-                        if (evItem.channel) {
+                        if (added && evItem.channel) {
                             evItem.channel->send(modeFrame);
-                            for (size_t off = 0; off < pipeBacklog.size(); off += kReplayChunk) {
-                                evItem.channel->send(pipeBacklog.substr(off, kReplayChunk));
+                            std::string snap = replay.snapshot();
+                            for (size_t off = 0; off < snap.size(); off += kReplayChunk) {
+                                evItem.channel->send(snap.substr(off, kReplayChunk));
                             }
                             if (eofSeen) {
                                 evItem.channel->send(std::string("\x00"
@@ -548,7 +643,12 @@ int main(int argc, char *argv[]) {
                                                      R"({"type":"eof"})");
                             }
                         }
+                        if (added && perm == Permission::Pending) {
+                            admitQueue.emplace_back(evItem.clientId, name);
+                            promptAdmit();
+                        }
                     } else if (evItem.type == Event::Type::Disconnect) {
+                        dropPending(evItem.clientId);
                         registry.removeClient(evItem.clientId);
                         std::lock_guard<std::mutex> lock(sessionsMutex);
                         sessions.erase(evItem.clientId);
@@ -563,8 +663,9 @@ int main(int argc, char *argv[]) {
                                 if (payload.contains("type") && payload["type"] == "resize") {
                                     uint16_t r = payload["rows"];
                                     uint16_t c = payload["cols"];
-                                    registry.updateClientSize(evItem.clientId, {.rows=r, .cols=c});
+                                    registry.updateClientSize(evItem.clientId, {.rows = r, .cols = c});
                                 } else if (payload.contains("type") && payload["type"] == "bye") {
+                                    dropPending(evItem.clientId);
                                     registry.removeClient(evItem.clientId);
                                     std::lock_guard<std::mutex> lock(sessionsMutex);
                                     sessions.erase(evItem.clientId);
@@ -585,12 +686,7 @@ int main(int argc, char *argv[]) {
                     if (localTty) {
                         writeFull(STDOUT_FILENO, buf, static_cast<size_t>(n));
                     }
-                    if (mode == SessionMode::Pipe) {
-                        pipeBacklog.append(buf, static_cast<size_t>(n));
-                        if (pipeBacklog.size() > kBacklogMax) {
-                            pipeBacklog.erase(0, pipeBacklog.size() - kBacklogMax);
-                        }
-                    }
+                    replay.append(std::string_view(buf, static_cast<size_t>(n)));
                 } else if (n == 0 && mode == SessionMode::Pipe) {
                     registry.broadcastControl(std::string(R"({"type":"eof"})"));
                     eofSeen = true;
@@ -608,6 +704,11 @@ int main(int argc, char *argv[]) {
         registry.broadcastControl(std::string(R"({"type":"end"})"));
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+    server.stop();
+    if (serverThread.joinable()) {
+        serverThread.join();
+    }
 
     if (localTty) {
         disableRawTty();

@@ -8,7 +8,7 @@
 #include <rtc/datachannel.hpp>
 
 /// Client permission levels.
-enum class Permission : std::uint8_t { Collaborator, Observer };
+enum class Permission : std::uint8_t { Collaborator, Observer, Pending };
 
 /// Terminal size specifications.
 struct TermSize {
@@ -23,6 +23,7 @@ struct Client {
     std::string color;
     Permission permission;
     bool active;
+    bool sized = false;
     TermSize termSize;
     std::shared_ptr<rtc::DataChannel> channel;
     std::chrono::steady_clock::time_point lastActivity;
@@ -35,11 +36,17 @@ public:
     /// Creates the registry.
     SessionRegistry(int ptyFd, int maxClientsVal);
 
-    /// Registers a client.
-    void addClient(const std::string &id, const std::string &name, Permission perm, const std::shared_ptr<rtc::DataChannel> &chan);
+    /// Registers a client. False when full.
+    bool addClient(const std::string &id, const std::string &name, Permission perm, const std::shared_ptr<rtc::DataChannel> &chan);
 
     /// Unregisters a client.
     void removeClient(const std::string &id);
+
+    /// Changes a client permission tier.
+    void setPermission(const std::string &id, Permission perm);
+
+    /// Sends an error frame and drops the client.
+    void kickClient(const std::string &id, const std::string &reason);
 
     /// Updates client size.
     void updateClientSize(const std::string &id, TermSize size);

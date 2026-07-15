@@ -102,6 +102,7 @@ static void ensureConfigFile() {
         {"no-stun", "false"},
         {"no-turn", "false"},
         {"offline", "false"},
+        {"admit", "true"},
         {"signal", DEFAULT_SIGNALING_URL},
     };
     writeFileConfig(defaults);
@@ -219,6 +220,10 @@ static void loadConfigFile(CLIConfig &config) {
     if (keyPos != std::string_view::npos) {
         config.offline = tokenAfter(session, keyPos) == "true";
     }
+    keyPos = findKey(session, "admit");
+    if (keyPos != std::string_view::npos) {
+        config.admit = tokenAfter(session, keyPos) == "true";
+    }
 }
 
 CLIConfig parseCLIArgs(int argc, char *argv[]) {
@@ -292,7 +297,7 @@ std::string versionString() {
 
 static const std::map<std::string, char> CONFIG_KEYS = {
     {"port", 'n'},      {"max-clients", 'n'}, {"idle-timeout", 'n'}, {"stun", 's'},   {"turn", 's'},    {"turn-user", 's'},
-    {"turn-pass", 's'}, {"no-stun", 'b'},     {"no-turn", 'b'},      {"signal", 's'}, {"offline", 'b'},
+    {"turn-pass", 's'}, {"no-stun", 'b'},     {"no-turn", 'b'},      {"signal", 's'}, {"offline", 'b'}, {"admit", 'b'},
 };
 
 static std::map<std::string, std::string> readFileConfig() {
@@ -381,6 +386,10 @@ static std::map<std::string, std::string> readFileConfig() {
     if (keyPos != std::string_view::npos) {
         values["offline"] = tokenAfter(session, keyPos);
     }
+    keyPos = findKey(session, "admit");
+    if (keyPos != std::string_view::npos) {
+        values["admit"] = tokenAfter(session, keyPos);
+    }
     return values;
 }
 
@@ -429,7 +438,7 @@ static bool writeFileConfig(const std::map<std::string, std::string> &values) {
     }
 
     bool hasSession = values.contains("port") || values.contains("max-clients") || values.contains("idle-timeout") ||
-                      values.contains("signal") || values.contains("offline");
+                      values.contains("signal") || values.contains("offline") || values.contains("admit");
     if (hasSession) {
         out << "[session]\n";
         if (values.contains("port")) {
@@ -446,6 +455,9 @@ static bool writeFileConfig(const std::map<std::string, std::string> &values) {
         }
         if (values.contains("offline")) {
             out << "offline = " << values.at("offline") << "\n";
+        }
+        if (values.contains("admit")) {
+            out << "admit = " << values.at("admit") << "\n";
         }
     }
     return true;

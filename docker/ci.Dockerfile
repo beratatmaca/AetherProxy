@@ -6,7 +6,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 RUN apt-get update -qq \
     && apt-get install -y --no-install-recommends \
         build-essential clang clang-format clang-tidy cmake ninja-build \
-        doxygen graphviz libssl-dev python3 xxd git ca-certificates curl bash file \
+        doxygen graphviz libssl-dev python3 xxd git ca-certificates curl bash file psmisc \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \

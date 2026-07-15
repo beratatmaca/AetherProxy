@@ -65,6 +65,7 @@ add_executable(aetherproxy
     src/common/webrtc_session.cpp
     src/host/http_server.cpp
     src/host/session_registry.cpp
+    src/host/replay_buffer.cpp
     src/client/native_client.cpp
     src/common/config.cpp
 )
@@ -74,6 +75,9 @@ string(STRIP "${AETHER_VERSION}" AETHER_VERSION)
 target_compile_definitions(aetherproxy PRIVATE AETHER_VERSION="${AETHER_VERSION}")
 
 target_include_directories(aetherproxy PRIVATE src ${qrencode_SOURCE_DIR})
+
+# Warnings apply to our target only, not fetched deps.
+target_compile_options(aetherproxy PRIVATE -Wall -Wextra)
 
 # Link dependencies. libdatachannel ships a separate static target.
 if(STATIC_BUILD)

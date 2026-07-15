@@ -31,7 +31,7 @@ PTYSource::PTYSource(const std::vector<std::string> &cmd) {
             }
             execl(shell, shell, nullptr);
         }
-        std::exit(1);
+        _exit(127);
     } else if (pid > 0) {
         masterFd = master;
         childPid = pid;

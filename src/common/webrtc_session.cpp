@@ -1,4 +1,5 @@
 #include "common/webrtc_session.hpp"
+#include <chrono>
 #include <iostream>
 #include <future>
 #include <sstream>
@@ -117,7 +118,7 @@ std::string WebRTCSession::createOffer() {
     });
     pc->setLocalDescription();
     if (pc->gatheringState() != rtc::PeerConnection::GatheringState::Complete) {
-        future.wait();
+        future.wait_for(std::chrono::seconds(10));
     }
 
     auto offer = pc->localDescription();
@@ -140,7 +141,7 @@ std::string WebRTCSession::createAnswer() {
     });
     pc->setLocalDescription();
     if (pc->gatheringState() != rtc::PeerConnection::GatheringState::Complete) {
-        future.wait();
+        future.wait_for(std::chrono::seconds(10));
     }
 
     auto answer = pc->localDescription();

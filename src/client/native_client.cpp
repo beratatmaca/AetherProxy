@@ -7,6 +7,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <chrono>
+#include <random>
 #include <iostream>
 #include <sstream>
 #include <string_view>
@@ -99,6 +100,10 @@ static void handleOsc52(std::string_view seq) {
     if (payload == "?") {
         return;
     }
+    constexpr size_t kMaxClipB64 = (1U << 16U) * 4U / 3U;
+    if (payload.size() > kMaxClipB64) {
+        return;
+    }
     std::string decoded = base64Decode(payload);
     if (!decoded.empty()) {
         copyToClipboard(decoded);
@@ -146,12 +151,14 @@ static std::string localUserName() {
     return (user != nullptr && *user != '\0') ? user : "guest";
 }
 
-void NativeClient::connect(const std::string &signalingUrl, const std::string &roomCode) {
-    session->initialize({}, {}, "", "", false, false, false);
+void NativeClient::connect(const CLIConfig &config, const std::string &roomCode) {
+    session->initialize(config.stunServers, config.turnServers, config.turnUser, config.turnPass, config.noStun, config.noTurn, false);
 
+    std::random_device rd;
     std::ostringstream idStream;
-    idStream << "nc-" << std::hex << reinterpret_cast<uintptr_t>(this);
+    idStream << "nc-" << std::hex << rd() << rd();
     const std::string clientId = idStream.str();
+    myId = clientId;
 
     signalClient->onMessage([this, clientId](const std::string &type, const std::string &data) {
         if (type == "offer") {
@@ -189,7 +196,7 @@ void NativeClient::connect(const std::string &signalingUrl, const std::string &r
         }
     });
 
-    session->onOpen([this]() { handleSigwinch(0); });
+    session->onOpen([]() { handleSigwinch(0); });
 
     session->onMessage([this](std::string msg) {
         eq.push(Event{.type = Event::Type::Message, .clientId = "", .clientName = "", .data = std::move(msg), .channel = nullptr});
@@ -203,7 +210,7 @@ void NativeClient::connect(const std::string &signalingUrl, const std::string &r
         signalClient->send("hello", helloMsg.dump());
     });
 
-    signalClient->connect(signalingUrl, roomCode);
+    signalClient->connect(config.signalingUrl, roomCode);
 
     auto old = ::signal(SIGWINCH, handleSigwinch);
     (void)old;
@@ -242,6 +249,9 @@ void NativeClient::renderTelemetry() {
     }
     if (!peers.empty()) {
         text << " · " << peers;
+    }
+    if (pendingApproval) {
+        text << " · awaiting approval";
     }
     if (!lockedBy.empty()) {
         auto held = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - lockedAt).count();
@@ -379,11 +389,20 @@ void NativeClient::run() {
                                 lockedAt = std::chrono::steady_clock::now();
                                 renderTelemetry();
                             }
+                            if (type == "error") {
+                                writeAllOut("\r\n[AetherProxy: " + payload.value("message", std::string("rejected")) + "]\r\n");
+                                running = false;
+                                break;
+                            }
                             if (type == "presence") {
                                 std::string line;
+                                bool pending = false;
                                 for (const auto &c : payload.value("clients", json::array())) {
                                     if (!c.is_object()) {
                                         continue;
+                                    }
+                                    if (c.value("id", "") == myId) {
+                                        pending = c.value("permission", "") == "pending";
                                     }
                                     if (!line.empty()) {
                                         line += " ";
@@ -394,6 +413,7 @@ void NativeClient::run() {
                                     }
                                 }
                                 peers = line;
+                                pendingApproval = pending;
                                 renderTelemetry();
                             }
                         } catch (...) {

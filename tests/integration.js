@@ -15,14 +15,15 @@ const { chromium, firefox }  = require('@playwright/test');
 const { spawn, execFileSync } = require('child_process');
 const assert                 = require('assert');
 const http                   = require('http');
+const net                    = require('net');
 const fs                     = require('fs');
 const os                     = require('os');
 const path                   = require('path');
 
 // ################ helpers ################
 
-const BINARY   = './build/aetherproxy';
-const PORT     = 8095;
+const BINARY   = process.env.BINARY || './build/aetherproxy';
+const PORT     = Number(process.env.PORT) || 8095;
 const ROOM_RE  = /^[a-z]+-[a-z]+-[a-z]+-\d{5}$/;
 
 /** Fetches a URL and returns { status, body }. */
@@ -39,6 +40,23 @@ function fetchText(url) {
 /** Resolves after `ms` milliseconds. */
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
+/** Waits until nothing accepts TCP connections on the port. */
+function waitForPortFree(port, timeoutMs = 5000) {
+    return new Promise(resolve => {
+        const deadline = Date.now() + timeoutMs;
+        const probe = () => {
+            const sock = net.connect({ port, host: '127.0.0.1' });
+            sock.once('connect', () => {
+                sock.destroy();
+                if (Date.now() > deadline) return resolve();
+                setTimeout(probe, 100);
+            });
+            sock.once('error', () => resolve());
+        };
+        probe();
+    });
+}
+
 /**
  * Returns an env with an isolated HOME whose saved config sets the test
  * port. The port flag is config-only now, so hosts pick it up from there.
@@ -51,6 +69,8 @@ function testEnv() {
         execFileSync(BINARY, ['config', 'set', 'port', String(PORT)], { env });
         // Offline keeps test hosts away from real STUN/TURN/signaling servers.
         execFileSync(BINARY, ['config', 'set', 'offline', 'true'], { env });
+        // Admission prompts are covered by T-22; other tests auto-admit.
+        execFileSync(BINARY, ['config', 'set', 'admit', 'false'], { env });
     }
     return { ...process.env, HOME: TEST_HOME };
 }
@@ -64,6 +84,8 @@ function testEnv() {
  * @param {number} timeoutMs      How long to wait for "Server listening".
  */
 async function spawnHost(extraArgs = [], stdinBuf = null, timeoutMs = 12_000, extraEnv = {}) {
+    // A lingering host from the previous test poisons the port.
+    await waitForPortFree(PORT);
     const args = [...extraArgs];
     const env  = { ...testEnv(), ...extraEnv };
     let proc;
@@ -87,6 +109,7 @@ async function spawnHost(extraArgs = [], stdinBuf = null, timeoutMs = 12_000, ex
 
     let stdoutBuf = '';
     let roomCode  = '';
+    let hostReady = false;
 
     const ready = new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -102,14 +125,17 @@ async function spawnHost(extraArgs = [], stdinBuf = null, timeoutMs = 12_000, ex
             if (m && !roomCode) roomCode = m[1].trim();
             if (stdoutBuf.includes('Server listening on port')) {
                 clearTimeout(timer);
+                hostReady = true;
                 resolve();
             }
         });
         proc.stderr.on('data', d => process.stderr.write('[host err] ' + d));
         proc.on('exit', code => {
             clearTimeout(timer);
-            // Resolve so callers can inspect; individual tests must check.
-            resolve();
+            if (!hostReady) {
+                reject(new Error(
+                    `Host exited before startup (code ${code}).\nstdout:\n${stdoutBuf}`));
+            }
         });
     });
 
@@ -292,6 +318,7 @@ async function testConfigCommand() {
  * offers still work and no signaling connection is reported.
  */
 async function testOfflineMode() {
+    await waitForPortFree(PORT);
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aether-home-t15-'));
     const env  = { ...process.env, HOME: home };
     execFileSync(BINARY, ['config', 'set', 'port', String(PORT)], { env });
@@ -554,8 +581,9 @@ async function testInteractiveLifecycle(browserType, browserName) {
     execFileSync(BINARY, ['config', 'set', 'signal', `ws://127.0.0.1:${SIG_PORT}`], { env });
     execFileSync(BINARY, ['config', 'set', 'no-stun', 'true'], { env });
     execFileSync(BINARY, ['config', 'set', 'no-turn', 'true'], { env });
+    execFileSync(BINARY, ['config', 'set', 'admit', 'false'], { env });
 
-    const sig = spawn('node', ['tools/signaling-server.js'], {
+    const sig = spawn('node', ['signaling/server.js'], {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
             ...process.env,
@@ -726,9 +754,9 @@ async function testServerExitBroadcast(browserType, browserName) {
             { timeout: 15_000 },
         );
 
-        // Signal only the binary, not the script(1) wrapper, so the
-        // broadcast races nothing.
-        execFileSync('pkill', ['-TERM', '-x', 'aetherproxy']);
+        // Signal only this test's binary (script's direct child), not the
+        // wrapper and not unrelated aetherproxy processes on the machine.
+        execFileSync('pkill', ['-TERM', '-x', '-P', String(proc.pid), 'aetherproxy']);
 
         await page.waitForFunction(
             () => document.getElementById('status-text').textContent === 'Server terminated',
@@ -840,6 +868,93 @@ async function testInputDebounce(browserType, browserName) {
     }
 }
 
+/**
+ * T-22  Admission gate.
+ *
+ * With admit=true the host prompts before linking input. The pending
+ * client sees output but its keystrokes drop, and the badge reads
+ * "Waiting for approval". 'y' promotes it to collaborator. A second
+ * client answered with 'n' is kicked with an error frame.
+ */
+async function testAdmissionGate(browserType, browserName) {
+    await waitForPortFree(PORT);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aether-home-t22-'));
+    const env  = { ...process.env, HOME: home };
+    execFileSync(BINARY, ['config', 'set', 'port', String(PORT)], { env });
+    execFileSync(BINARY, ['config', 'set', 'offline', 'true'], { env });
+    execFileSync(BINARY, ['config', 'set', 'admit', 'true'], { env });
+
+    const { proc, getStdout } = await spawnHost([], null, 12_000, { HOME: home });
+    const browser = await browserType.launch({ headless: true });
+    const ctxA = await browser.newContext();
+    const pageA = await ctxA.newPage();
+    try {
+        await pageA.addInitScript(() => {
+            try { localStorage.setItem('aether-name', 'alice'); } catch (e) {}
+        });
+        await pageA.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
+        await pageA.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Connected',
+            { timeout: 15_000 },
+        );
+
+        // Host prompts and the client shows the pending badge.
+        assert.ok(
+            await waitUntil(() => getStdout().includes('Connection request from alice')),
+            'Host must prompt for admission',
+        );
+        await pageA.waitForFunction(
+            () => document.getElementById('mode-badge-text').textContent.includes('approval'),
+            { timeout: 5_000 },
+        );
+
+        // Pending keystrokes never reach the shell.
+        await pageA.click('#terminal-container');
+        await pageA.evaluate(() => document.querySelector('.xterm-helper-textarea')?.focus());
+        await pageA.keyboard.type('PENDINGXYZ');
+        await wait(700);
+        assert.ok(!getStdout().includes('PENDINGXYZ'), 'Pending input must not reach the host');
+
+        // Approve. The badge clears and input flows.
+        proc.stdin.write('y');
+        await pageA.waitForFunction(
+            () => !document.getElementById('mode-badge').classList.contains('visible'),
+            { timeout: 5_000 },
+        );
+        await pageA.keyboard.type('echo admit_$((30+3))');
+        await pageA.keyboard.press('Enter');
+        assert.ok(
+            await waitUntil(() => getStdout().includes('admit_33')),
+            'Approved input must reach the shell',
+        );
+
+        // A second client gets rejected and kicked.
+        const ctxB = await browser.newContext();
+        const pageB = await ctxB.newPage();
+        await pageB.addInitScript(() => {
+            try { localStorage.setItem('aether-name', 'mallory'); } catch (e) {}
+        });
+        await pageB.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
+        assert.ok(
+            await waitUntil(() => getStdout().includes('Connection request from mallory')),
+            'Host must prompt for the second client',
+        );
+        proc.stdin.write('n');
+        await pageB.waitForFunction(
+            () => {
+                const t = document.getElementById('status-text').textContent;
+                return t.includes('rejected') || t === 'Disconnected';
+            },
+            { timeout: 10_000 },
+        );
+
+        console.log(`  [T-22] Admission gate (${browserName}) ✓`);
+    } finally {
+        await browser.close();
+        await killHost(proc);
+    }
+}
+
 // ################ test registry and runner ################
 
 const BINARY_TESTS = [
@@ -860,6 +975,7 @@ const BROWSER_TESTS = [
     { name: 'T-19  Server exit broadcast', fn: testServerExitBroadcast },
     { name: 'T-20  Telemetry overlay',     fn: testTelemetryOverlay },
     { name: 'T-21  Input debounce',        fn: testInputDebounce },
+    { name: 'T-22  Admission gate',        fn: testAdmissionGate },
 ];
 
 // DOM-only tests from the previous session (no real WebRTC needed).
@@ -942,7 +1058,11 @@ async function runDomTests(browserType, browserName) {
     }
 
     // Browser-side tests across Chromium and Firefox.
-    for (const [browserType, browserName] of [[chromium, 'Chromium'], [firefox, 'Firefox']]) {
+    // BROWSERS=chromium narrows the matrix (used by sanitizer runs).
+    const wanted = (process.env.BROWSERS || 'chromium,firefox').toLowerCase().split(',');
+    const matrix = [[chromium, 'Chromium'], [firefox, 'Firefox']]
+        .filter(([, name]) => wanted.includes(name.toLowerCase()));
+    for (const [browserType, browserName] of matrix) {
         console.log(`\n╔══════════════════════════════════════╗`);
         console.log(`║  Browser tests — ${browserName.padEnd(18)} ║`);
         console.log(`╚══════════════════════════════════════╝`);
