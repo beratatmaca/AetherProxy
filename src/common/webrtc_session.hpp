@@ -16,7 +16,13 @@ public:
     ~WebRTCSession();
 
     /// Initializes connection using signaling parameters.
-    /// @param offerer True creates the DataChannel locally.
+    /// @param stunServers List of STUN servers.
+    /// @param turnServers List of TURN servers.
+    /// @param turnUser TURN username.
+    /// @param turnPass TURN password.
+    /// @param noStun Disable STUN if true.
+    /// @param noTurn Disable TURN if true.
+    /// @param offerer True if creating data channel.
     void initialize(const std::vector<std::string> &stunServers, const std::vector<std::string> &turnServers, const std::string &turnUser,
                     const std::string &turnPass, bool noStun = false, bool noTurn = false, bool offerer = true);
 

@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Suppress developer and deprecation warnings
+set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
+set(CMAKE_WARN_DEVELOPER OFF CACHE BOOL "" FORCE)
+
+# Set FetchContent timestamp policy
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+
 project(AetherProxy LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -78,7 +88,7 @@ target_compile_definitions(aetherproxy PRIVATE AETHER_VERSION="${AETHER_VERSION}
 target_include_directories(aetherproxy PRIVATE src ${qrencode_SOURCE_DIR})
 
 # Warnings apply to our target only, not fetched deps.
-target_compile_options(aetherproxy PRIVATE -Wall -Wextra)
+target_compile_options(aetherproxy PRIVATE -Wall -Wextra -pedantic)
 
 # Link dependencies. libdatachannel ships a separate static target.
 if(STATIC_BUILD)

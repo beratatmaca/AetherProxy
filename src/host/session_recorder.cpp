@@ -30,7 +30,7 @@ void SessionRecorder::record(std::string_view data) {
         return;
     }
     auto offset = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - baseline).count();
-    OutputEvent ev{.offset=static_cast<double>(offset) / 1e6, .data=std::string(data)};
+    OutputEvent ev{.offset = static_cast<double>(offset) / 1e6, .data = std::string(data)};
     queue.push(std::move(ev));
 }
 

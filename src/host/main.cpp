@@ -296,9 +296,9 @@ int main(int argc, char *argv[]) {
     }
 
     if (mode == SessionMode::Interactive) {
-        if (argc < 3) {
-            std::cerr << "Usage: aetherproxy interactive <room>\n";
-            return 1;
+        std::string room;
+        if (argc >= 3) {
+            room = argv[2];
         }
         if (config.signalingUrl.empty()) {
             std::cerr << "Error: no signaling server set.\n"
@@ -307,7 +307,7 @@ int main(int argc, char *argv[]) {
         }
         ::signal(SIGINT, handleExitSignal);
         ::signal(SIGTERM, handleExitSignal);
-        return runInteractiveClient(config, argv[2]);
+        return runInteractiveClient(config, room);
     }
 
     ::signal(SIGINT, handleExitSignal);

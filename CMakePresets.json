@@ -12,6 +12,10 @@
       "description": "Debug build with AddressSanitizer",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-debug",
+      "warnings": {
+        "dev": false,
+        "deprecated": false
+      },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
@@ -23,6 +27,10 @@
       "description": "Optimized build for local use",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-release",
+      "warnings": {
+        "dev": false,
+        "deprecated": false
+      },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
@@ -33,6 +41,10 @@
       "description": "Fully static binary. Run inside Alpine, gcc there is musl.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-release-static",
+      "warnings": {
+        "dev": false,
+        "deprecated": false
+      },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "STATIC_BUILD": "ON"
