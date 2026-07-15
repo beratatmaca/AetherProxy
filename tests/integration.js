@@ -536,60 +536,110 @@ async function testLocalBridge(browserType, browserName) {
 }
 
 /**
- * T-16  Interactive mode lifecycle.
+ * T-16  Interactive client lifecycle.
  *
- * `aetherproxy interactive` launches a browser ($BROWSER honoured) and exits
- * on its own once the last client disconnects. BROWSER=/bin/true suppresses
- * a real browser; the test connects its own Playwright page instead.
+ * `aetherproxy interactive <room>` is a client, not a server. It serves
+ * the web client on a loopback port, opens the browser ($BROWSER
+ * honoured), and exits once the tab closes. The page reaches a separate
+ * host through a local signaling relay. The host must survive the
+ * client leaving.
  */
 async function testInteractiveLifecycle(browserType, browserName) {
-    const { proc, getStdout } = await spawnHost(
-        ['interactive'], null, 12_000, { BROWSER: '/bin/true' },
-    );
-    const browser = await browserType.launch({ headless: true });
-    let exited = false;
-    proc.on('exit', () => { exited = true; });
+    const SIG_PORT = PORT + 4;
 
+    // Non-offline HOME wired to the local signaling relay.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'aether-home-t16-'));
+    const env  = { ...process.env, HOME: home };
+    execFileSync(BINARY, ['config', 'set', 'port', String(PORT)], { env });
+    execFileSync(BINARY, ['config', 'set', 'signal', `ws://127.0.0.1:${SIG_PORT}`], { env });
+    execFileSync(BINARY, ['config', 'set', 'no-stun', 'true'], { env });
+    execFileSync(BINARY, ['config', 'set', 'no-turn', 'true'], { env });
+
+    const sig = spawn('node', ['tools/signaling-server.js'], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PORT: String(SIG_PORT) },
+    });
+    let sigOut = '';
+    sig.stdout.on('data', d => (sigOut += d.toString()));
+
+    let host = null;
+    let inter = null;
+    let browser = null;
     try {
         assert.ok(
-            await waitUntil(() => getStdout().includes('Opening browser')),
-            'Interactive mode must announce the browser launch',
+            await waitUntil(() => sigOut.includes('running on port')),
+            'Signaling relay must start',
         );
 
+        // Server side: a normal terminal-mode host.
+        host = await spawnHost([], null, 12_000, { HOME: home });
+        assert.match(host.roomCode, ROOM_RE, 'Host must print a room code');
+
+        // Client side: interactive launcher joining the host room.
+        inter = spawn(BINARY, ['interactive', host.roomCode], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: true,
+            env: { ...env, BROWSER: '/bin/true' },
+        });
+        let interOut = '';
+        let interExited = false;
+        inter.stdout.on('data', d => (interOut += d.toString()));
+        inter.on('exit', () => { interExited = true; });
+
+        const urlRe = /Opening browser: (http:\/\/127\.0\.0\.1:\d+\/\S+)/;
+        assert.ok(
+            await waitUntil(() => urlRe.test(interOut)),
+            'Interactive must print the local browser URL',
+        );
+        const url = interOut.match(urlRe)[1];
+        assert.ok(!interOut.includes('Room:'), 'Interactive must not create its own room');
+
+        browser = await browserType.launch({ headless: true });
         const page = await browser.newPage();
-        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
+        await page.goto(url);
         await page.waitForFunction(
             () => document.getElementById('status-text').textContent === 'Connected',
-            { timeout: 15_000 },
+            { timeout: 20_000 },
         );
 
-        // Stays alive past the grace period while the client is connected.
-        await wait(5_000);
-        assert.ok(!exited, 'Host must stay alive while the browser client is connected');
-
-        // Bridge works in interactive mode.
+        // Keystrokes reach the host shell through the relay.
         await page.click('#terminal-container');
         await page.evaluate(() => document.querySelector('.xterm-helper-textarea')?.focus());
         await wait(300);
         await page.keyboard.type('echo interactive_bridge_$((50+6))');
         await page.keyboard.press('Enter');
         assert.ok(
-            await waitUntil(() => getStdout().includes('interactive_bridge_56')),
-            'Browser keystrokes must reach the shell in interactive mode',
+            await waitUntil(() => host.getStdout().includes('interactive_bridge_56')),
+            'Browser keystrokes must reach the host shell',
         );
 
-        // Leaving the page fires pagehide, which sends the bye frame.
+        // $USER identity flows through the hello payload into presence.
+        const expectedName = process.env.USER || process.env.LOGNAME || 'guest';
+        await page.waitForFunction(
+            (n) => document.getElementById('peers-bar').textContent.includes(n),
+            expectedName,
+            { timeout: 10_000 },
+        );
+
+        // Closing the tab ends the launcher, not the host.
         await page.goto('about:blank');
         await browser.close();
+        browser = null;
         assert.ok(
-            await waitUntil(() => exited, 20_000),
-            'Host must exit on its own after the browser client disconnects',
+            await waitUntil(() => interExited, 20_000),
+            'Interactive must exit after the tab closes',
+        );
+        assert.ok(
+            host.proc.exitCode === null && host.proc.signalCode === null,
+            'Host must stay alive after the interactive client leaves',
         );
 
-        console.log(`  [T-16] Interactive lifecycle (${browserName}) ✓`);
+        console.log(`  [T-16] Interactive client lifecycle (${browserName}) ✓`);
     } finally {
-        if (browser.isConnected()) await browser.close();
-        if (!exited) await killHost(proc);
+        if (browser) await browser.close();
+        if (inter) await killHost(inter);
+        if (host) await killHost(host.proc);
+        sig.kill('SIGKILL');
     }
 }
 
@@ -623,6 +673,104 @@ async function testLandingPage(browserType, browserName) {
     }
 }
 
+/**
+ * T-18  Client identity in presence.
+ *
+ * A saved name rides the /offer query string. The host maps it in the
+ * SessionRegistry and echoes it back in presence frames. The peer pill
+ * in the header must render the name.
+ */
+async function testClientIdentity(browserType, browserName) {
+    const { proc } = await spawnHost();
+    const browser = await browserType.launch({ headless: true });
+    const page = await browser.newPage();
+    try {
+        await page.addInitScript(() => {
+            try { localStorage.setItem('aether-name', 'tester-name'); } catch (e) {}
+        });
+        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
+        await page.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Connected',
+            { timeout: 15_000 },
+        );
+        await page.waitForFunction(
+            () => document.getElementById('peers-bar').textContent.includes('tester-name'),
+            { timeout: 10_000 },
+        );
+        console.log(`  [T-18] Client identity in presence (${browserName}) ✓`);
+    } finally {
+        await browser.close();
+        await killHost(proc);
+    }
+}
+
+/**
+ * T-19  Server exit broadcast.
+ *
+ * SIGTERM on the host must broadcast a server_exit frame. The web client
+ * locks input, renders the termination notice, and shows "Server terminated".
+ */
+async function testServerExitBroadcast(browserType, browserName) {
+    const { proc } = await spawnHost();
+    const browser = await browserType.launch({ headless: true });
+    const page = await browser.newPage();
+    try {
+        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
+        await page.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Connected',
+            { timeout: 15_000 },
+        );
+
+        // Signal only the binary, not the script(1) wrapper, so the
+        // broadcast races nothing.
+        execFileSync('pkill', ['-TERM', '-x', 'aetherproxy']);
+
+        await page.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Server terminated',
+            { timeout: 10_000 },
+        );
+        const locked = await page.$eval('#terminal-container',
+            el => el.classList.contains('pipe-locked'));
+        assert.ok(locked, 'Input must lock after server_exit');
+
+        console.log(`  [T-19] Server exit broadcast (${browserName}) ✓`);
+    } finally {
+        await browser.close();
+        await killHost(proc);
+    }
+}
+
+/**
+ * T-20  Telemetry overlay.
+ *
+ * After connecting, the 2000ms getStats() poll must reveal the overlay
+ * div with a connection state (and RTT when the browser reports one).
+ */
+async function testTelemetryOverlay(browserType, browserName) {
+    const { proc } = await spawnHost();
+    const browser = await browserType.launch({ headless: true });
+    const page = await browser.newPage();
+    try {
+        await page.goto(`http://localhost:${PORT}/#fox-river-stone-48291`);
+        await page.waitForFunction(
+            () => document.getElementById('status-text').textContent === 'Connected',
+            { timeout: 15_000 },
+        );
+        await page.waitForFunction(
+            () => {
+                const el = document.getElementById('telemetry');
+                return el && el.classList.contains('visible') && el.textContent.length > 0;
+            },
+            { timeout: 10_000 },
+        );
+        const text = await page.$eval('#telemetry', el => el.textContent);
+        console.log(`  [T-20] Telemetry overlay (${browserName}) ✓ — "${text}"`);
+    } finally {
+        await browser.close();
+        await killHost(proc);
+    }
+}
+
 // ################ test registry and runner ################
 
 const BINARY_TESTS = [
@@ -637,8 +785,11 @@ const BROWSER_TESTS = [
     { name: 'T-04  Pipe mode',        fn: testPipeMode      },
     { name: 'T-05  Terminal resize',  fn: testTerminalResize },
     { name: 'T-13  Local terminal bridge', fn: testLocalBridge },
-    { name: 'T-16  Interactive lifecycle', fn: testInteractiveLifecycle },
+    { name: 'T-16  Interactive client lifecycle', fn: testInteractiveLifecycle },
     { name: 'T-17  Landing page',          fn: testLandingPage },
+    { name: 'T-18  Client identity',       fn: testClientIdentity },
+    { name: 'T-19  Server exit broadcast', fn: testServerExitBroadcast },
+    { name: 'T-20  Telemetry overlay',     fn: testTelemetryOverlay },
 ];
 
 // DOM-only tests from the previous session (no real WebRTC needed).

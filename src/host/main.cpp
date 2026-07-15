@@ -31,7 +31,7 @@
 #include "host/session_registry.hpp"
 #include "client/native_client.hpp"
 
-enum class SessionMode : std::uint8_t { Terminal, Command, Pipe, Client, Collab, Interactive };
+enum class SessionMode : std::uint8_t { Terminal, Command, Pipe, Client, Interactive };
 
 bool hasFlag(const std::vector<std::string_view> &args, std::string_view flag) {
     return std::find(args.begin(), args.end(), flag) != args.end();
@@ -65,6 +65,12 @@ static std::string getLanIp() {
     }
     freeifaddrs(ifap);
     return result;
+}
+
+static volatile std::sig_atomic_t g_exitSignal = 0;
+
+static void handleExitSignal(int) {
+    g_exitSignal = 1;
 }
 
 static int host_winch_fd = -1;
@@ -117,22 +123,107 @@ static void launchBrowser(const std::string &url) {
 }
 
 SessionMode detectMode(const std::vector<std::string_view> &args) {
-    if (isatty(STDIN_FILENO) == 0) {
-        return SessionMode::Pipe;
-    }
-    if (hasFlag(args, "connect")) {
+    if (!args.empty() && args[0] == "connect") {
         return SessionMode::Client;
     }
-    if (hasFlag(args, "collab")) {
-        return SessionMode::Collab;
-    }
-    if (hasFlag(args, "interactive")) {
+    if (!args.empty() && args[0] == "interactive") {
         return SessionMode::Interactive;
+    }
+    if (isatty(STDIN_FILENO) == 0) {
+        return SessionMode::Pipe;
     }
     if (hasFlag(args, "--")) {
         return SessionMode::Command;
     }
     return SessionMode::Terminal;
+}
+
+static std::string sanitizeName(std::string_view raw) {
+    std::string out;
+    for (char c : raw) {
+        auto u = static_cast<unsigned char>(c);
+        if (u >= 0x20 && u != 0x7F) {
+            out.push_back(c);
+        }
+        if (out.size() >= 24) {
+            break;
+        }
+    }
+    return out;
+}
+
+static std::string urlEncode(std::string_view raw) {
+    static const char *hex = "0123456789ABCDEF";
+    std::string out;
+    for (char c : raw) {
+        auto u = static_cast<unsigned char>(c);
+        bool safe =
+            (u >= 'a' && u <= 'z') || (u >= 'A' && u <= 'Z') || (u >= '0' && u <= '9') || u == '-' || u == '_' || u == '.' || u == '~';
+        if (safe) {
+            out.push_back(c);
+        } else {
+            out.push_back('%');
+            out.push_back(hex[u >> 4U]);
+            out.push_back(hex[u & 0xFU]);
+        }
+    }
+    return out;
+}
+
+static std::string localUserName() {
+    const char *user = std::getenv("USER");
+    if (user == nullptr || *user == '\0') {
+        user = std::getenv("LOGNAME");
+    }
+    return (user != nullptr && *user != '\0') ? user : "guest";
+}
+
+static int runInteractiveClient(const CLIConfig &config, const std::string &room) {
+    HttpServer server;
+    if (!server.bindTo(0, true)) {
+        std::cerr << "Could not bind a local port.\n";
+        return 1;
+    }
+
+    std::atomic<bool> browserDone{false};
+    std::atomic<long long> lastPingMs{-1};
+    auto startTime = std::chrono::steady_clock::now();
+    auto msSince = [startTime]() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startTime).count();
+    };
+
+    std::thread serverThread([&server, &browserDone, &lastPingMs, &msSince]() {
+        server.run(nullptr, nullptr, [&browserDone, &lastPingMs, &msSince](const std::string &ev) {
+            if (ev == "ping") {
+                lastPingMs = msSince();
+            } else {
+                browserDone = true;
+            }
+        });
+    });
+
+    std::string url = "http://127.0.0.1:" + std::to_string(server.boundPort()) + "/?signal=" + urlEncode(config.signalingUrl) +
+                      "&interactive=1&name=" + urlEncode(localUserName()) + "#" + room;
+    std::cout << "Opening browser: " << url << "\n" << std::flush;
+    launchBrowser(url);
+
+    constexpr long long kConnectTimeoutMs = 60000;
+    constexpr long long kPingLossMs = 5000;
+    while (!browserDone && g_exitSignal == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        long long last = lastPingMs;
+        long long now = msSince();
+        if (last < 0 && now > kConnectTimeoutMs) {
+            break;
+        }
+        if (last >= 0 && now - last > kPingLossMs) {
+            break;
+        }
+    }
+
+    server.stop();
+    serverThread.join();
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -154,9 +245,20 @@ int main(int argc, char *argv[]) {
     if (!args.empty() && args[0] == "config") {
         return runConfigCommand(std::vector<std::string>(argv + 2, argv + argc));
     }
+    if (!args.empty() && args[0] == "collab") {
+        std::cerr << "collab mode is removed.\n"
+                  << "Every session accepts multiple clients.\n"
+                  << "Set the limit: aetherproxy config set max-clients N\n";
+        return 1;
+    }
 
     SessionMode mode = detectMode(args);
     CLIConfig config = parseCLIArgs(argc, argv);
+
+    if (mode == SessionMode::Client && isatty(STDIN_FILENO) == 0) {
+        std::cerr << "This mode needs a terminal on stdin.\n";
+        return 1;
+    }
 
     if (mode == SessionMode::Client) {
         if (argc < 3) {
@@ -173,6 +275,24 @@ int main(int argc, char *argv[]) {
         client.run();
         return 0;
     }
+
+    if (mode == SessionMode::Interactive) {
+        if (argc < 3) {
+            std::cerr << "Usage: aetherproxy interactive <room>\n";
+            return 1;
+        }
+        if (config.signalingUrl.empty()) {
+            std::cerr << "Error: no signaling server set.\n"
+                      << "Run: aetherproxy config set offline false\n";
+            return 1;
+        }
+        ::signal(SIGINT, handleExitSignal);
+        ::signal(SIGTERM, handleExitSignal);
+        return runInteractiveClient(config, argv[2]);
+    }
+
+    ::signal(SIGINT, handleExitSignal);
+    ::signal(SIGTERM, handleExitSignal);
 
     std::string room = generateRoomCode();
     std::string lanIp = getLanIp();
@@ -205,19 +325,19 @@ int main(int argc, char *argv[]) {
     SessionRegistry registry(ptyFd, config.maxClients);
 
     std::atomic<bool> running{true};
-    bool hasOwner = false;
-
-    registry.onOwnerDisconnect([&running]() { running = false; });
 
     std::unordered_map<std::string, std::shared_ptr<WebRTCSession>> sessions;
     std::mutex sessionsMutex;
     const size_t sessionLimit = static_cast<size_t>(std::min(config.maxClients, 32));
 
     HttpServer server;
+    if (!server.bindTo(config.port, false)) {
+        return 1;
+    }
+    std::cout << "Server listening on port " << server.boundPort() << "\n" << std::flush;
     std::thread serverThread([&server, &config, &eq, &sessions, &sessionsMutex, sessionLimit, &running]() {
-        server.start(
-            config.port,
-            [&config, &eq, &sessions, &sessionsMutex, sessionLimit](const std::string &clientId) {
+        server.run(
+            [&config, &eq, &sessions, &sessionsMutex, sessionLimit](const std::string &clientId, const std::string &name) {
                 std::lock_guard<std::mutex> lock(sessionsMutex);
                 auto it = sessions.find(clientId);
                 if (it != sessions.end()) {
@@ -229,7 +349,7 @@ int main(int argc, char *argv[]) {
                 auto session = std::make_shared<WebRTCSession>();
                 session->initialize(config.stunServers, config.turnServers, config.turnUser, config.turnPass, config.noStun, config.noTurn);
                 session->onOpen(
-                    [&eq, clientId, session]() { eq.push(Event{Event::Type::Join, clientId, "Collab", "", session->getChannel()}); });
+                    [&eq, clientId, name, session]() { eq.push(Event{Event::Type::Join, clientId, name, "", session->getChannel()}); });
                 session->onMessage(
                     [&eq, clientId](std::string msg) { eq.push(Event{Event::Type::Message, clientId, "", std::move(msg), nullptr}); });
                 session->onDisconnect([&eq, clientId]() { eq.push(Event{Event::Type::Disconnect, clientId, "", "", nullptr}); });
@@ -247,20 +367,17 @@ int main(int argc, char *argv[]) {
     });
     serverThread.detach();
 
-    if (mode == SessionMode::Interactive) {
-        std::cout << "Opening browser...\n" << std::flush;
-        launchBrowser("http://127.0.0.1:" + std::to_string(config.port) + "/#" + room);
-    }
-
     std::shared_ptr<SignalingClient> sigClient;
     if (!config.signalingUrl.empty()) {
         sigClient = std::make_shared<SignalingClient>();
         sigClient->onMessage([&](const std::string &type, const std::string &data) {
             if (type == "hello") {
                 std::string clientId;
+                std::string name;
                 try {
                     auto j = nlohmann::json::parse(data);
                     clientId = j.value("clientId", "");
+                    name = j.value("name", "");
                 } catch (...) {
                     return;
                 }
@@ -279,7 +396,7 @@ int main(int argc, char *argv[]) {
                 auto session = std::make_shared<WebRTCSession>();
                 session->initialize(config.stunServers, config.turnServers, config.turnUser, config.turnPass, config.noStun, config.noTurn);
                 session->onOpen(
-                    [&eq, clientId, session]() { eq.push(Event{Event::Type::Join, clientId, "Collab", "", session->getChannel()}); });
+                    [&eq, clientId, name, session]() { eq.push(Event{Event::Type::Join, clientId, name, "", session->getChannel()}); });
                 session->onMessage(
                     [&eq, clientId](std::string msg) { eq.push(Event{Event::Type::Message, clientId, "", std::move(msg), nullptr}); });
                 session->onDisconnect([&eq, clientId]() { eq.push(Event{Event::Type::Disconnect, clientId, "", "", nullptr}); });
@@ -364,11 +481,8 @@ int main(int argc, char *argv[]) {
     constexpr size_t kReplayChunk = 16384;
 
     auto lastClientSeen = std::chrono::steady_clock::now();
-    bool everHadClient = false;
-    constexpr int kInteractiveGraceSeconds = 3;
-    constexpr int kInteractiveConnectTimeoutSeconds = 60;
 
-    while (running) {
+    while (running && g_exitSignal == 0) {
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - lastInactivityCheck).count() >= 5) {
             registry.checkInactivity();
@@ -376,13 +490,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (registry.clientCount() > 0) {
-            everHadClient = true;
             lastClientSeen = now;
-        } else if (mode == SessionMode::Interactive) {
-            auto idle = std::chrono::duration_cast<std::chrono::seconds>(now - lastClientSeen).count();
-            if (idle >= (everHadClient ? kInteractiveGraceSeconds : kInteractiveConnectTimeoutSeconds)) {
-                running = false;
-            }
         } else if (!localTty && config.idleTimeout > 0 &&
                    std::chrono::duration_cast<std::chrono::seconds>(now - lastClientSeen).count() >= config.idleTimeout) {
             running = false;
@@ -416,18 +524,13 @@ int main(int argc, char *argv[]) {
                         break;
                     }
                     if (evItem.type == Event::Type::Join) {
-                        Permission perm = Permission::Collaborator;
-                        if (mode == SessionMode::Collab && !hasOwner) {
-                            perm = Permission::Owner;
-                            hasOwner = true;
+                        Permission perm = mode == SessionMode::Pipe ? Permission::Observer : Permission::Collaborator;
+                        std::string name = sanitizeName(evItem.clientName);
+                        if (name.empty()) {
+                            name = evItem.clientId;
                         }
-                        registry.addClient(evItem.clientId, "Collab", perm, evItem.channel);
-                        std::string modeStr = "terminal";
-                        if (mode == SessionMode::Pipe) {
-                            modeStr = "pipe";
-                        } else if (mode == SessionMode::Collab) {
-                            modeStr = "collab";
-                        }
+                        registry.addClient(evItem.clientId, name, perm, evItem.channel);
+                        std::string modeStr = mode == SessionMode::Pipe ? "pipe" : "terminal";
                         std::string modeFrame = std::string(
                                                     "\x00"
                                                     "AETHER:",
@@ -499,7 +602,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    registry.broadcastControl(std::string(R"({"type":"end"})"));
+    if (g_exitSignal != 0) {
+        registry.broadcastControl(std::string(R"({"type":"server_exit","reason":"terminated"})"));
+    } else {
+        registry.broadcastControl(std::string(R"({"type":"end"})"));
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     if (localTty) {

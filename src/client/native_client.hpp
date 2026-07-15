@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <memory>
+#include <cstdint>
 #include "common/webrtc_session.hpp"
 #include "common/signaling_client.hpp"
 #include "common/event_queue.hpp"
@@ -21,9 +22,13 @@ public:
     void run();
 
 private:
+    void applyLocalWinch();
+    void renderTelemetry();
+
     std::shared_ptr<SignalingClient> signalClient;
     std::shared_ptr<WebRTCSession> session;
     EventQueue eq;
     int winchFd = -1;
     bool running = false;
+    uint16_t termRows = 0;
 };

@@ -162,6 +162,25 @@
             pointer-events: none;
             opacity: 0.9;
         }
+        #telemetry {
+            display: none;
+            position: absolute;
+            right: 1.75rem;
+            bottom: 1.75rem;
+            padding: 0.25rem 0.6rem;
+            border-radius: 6px;
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid var(--border-color);
+            font-family: monospace;
+            font-size: 0.7rem;
+            color: var(--text-color);
+            opacity: 0.45;
+            pointer-events: none;
+            z-index: 5;
+        }
+        #telemetry.visible {
+            display: block;
+        }
         #landing {
             position: fixed;
             inset: 0;
@@ -194,7 +213,8 @@
             color: #9ca3af;
             font-size: 0.9rem;
         }
-        #room-input {
+        #room-input,
+        #name-input {
             background: rgba(0, 0, 0, 0.4);
             border: 1px solid var(--border-color);
             border-radius: 6px;
@@ -203,7 +223,8 @@
             font-size: 1rem;
             text-align: center;
         }
-        #room-input:focus {
+        #room-input:focus,
+        #name-input:focus {
             outline: none;
             border-color: var(--accent-color);
         }
@@ -229,6 +250,7 @@
 
     <main>
         <div id="terminal-container"></div>
+        <div id="telemetry"></div>
     </main>
 
     <div id="landing" class="hidden">
@@ -236,6 +258,7 @@
             <h1>ÆtherProxy</h1>
             <p>Scan the QR code from your terminal to open a session.</p>
             <p>Or enter the room code:</p>
+            <input id="name-input" placeholder="Your name" autocomplete="off" spellcheck="false" maxlength="24" />
             <input id="room-input" placeholder="fox-river-stone-48291" autocomplete="off" spellcheck="false" />
             <button class="btn" id="room-go">Connect</button>
         </div>
@@ -258,6 +281,7 @@
         const statusText = document.getElementById('status-text');
         const modeBadge = document.getElementById('mode-badge');
         const peersBar = document.getElementById('peers-bar');
+        const telemetry = document.getElementById('telemetry');
 
         // Session state — exposed on window for Playwright introspection.
         window.isPipeMode = false;
@@ -279,15 +303,16 @@
             if (sessionEnded) label = 'Session ended';
             else if (isPipeMode) label = 'Pipe Mode · Read Only';
             else if (isObserver) label = 'Observer · Read Only';
-            else if (sessionMode === 'collab') label = 'Collab';
             if (label) badgeText.textContent = label;
             modeBadge.classList.toggle('visible', label !== '');
             termContainer.classList.toggle('pipe-locked', inputLocked());
         }
 
         function endSession(label) {
+            if (sessionEnded) return;
             sessionEnded = true;
             updateStatus(label, false);
+            telemetry.classList.remove('visible');
             refreshBadge();
         }
 
@@ -325,8 +350,20 @@
         });
 
         const clientId = 'client-' + Math.random().toString(36).substring(2, 11);
+        let displayName = '';
+        try { displayName = localStorage.getItem('aether-name') || ''; } catch (e) {}
+
+        // Client mode via query params: ?signal= uses WebSocket signaling,
+        // ?interactive=1 keeps the local launcher process alive with pings.
+        const urlParams = new URLSearchParams(location.search);
+        const signalUrl = urlParams.get('signal') || '';
+        const isInteractive = urlParams.get('interactive') === '1';
+        const paramName = (urlParams.get('name') || '').trim().slice(0, 24);
+        if (paramName) displayName = paramName;
+
         let pc = null;
         let dc = null;
+        let ws = null;
 
         function applyModifiers(data) {
             // Apply Ctrl: map printable ASCII a-z to control characters \x01-\x1a
@@ -427,6 +464,10 @@
                             setPipeMode(true); // lock input on EOF too
                         } else if (payload.type === 'end') {
                             endSession('Session ended');
+                        } else if (payload.type === 'server_exit') {
+                            term.write('\r\n[AetherProxy: Server terminated session]\r\n');
+                            endSession('Server terminated');
+                            if (pc) pc.close();
                         } else if (payload.type === 'mode') {
                             setSessionMode(payload.mode);
                         }
@@ -440,6 +481,14 @@
             dc.onclose = () => endSession('Disconnected');
             };
 
+            if (signalUrl) {
+                connectViaSignaling();
+            } else {
+                connectViaLocalHttp();
+            }
+        }
+
+        function connectViaLocalHttp() {
             pc.onicecandidate = (event) => {
                 if (!event.candidate) {
                     fetch('/answer?id=' + clientId, {
@@ -449,7 +498,7 @@
                 }
             };
 
-            fetch('/offer?id=' + clientId)
+            fetch('/offer?id=' + clientId + '&name=' + encodeURIComponent(displayName || 'guest'))
                 .then(res => {
                     if (!res.ok) {
                         throw new Error(res.status === 503 ? 'Session full' : 'Offer request failed');
@@ -462,15 +511,98 @@
                 .catch(err => updateStatus('Error: ' + err.message, false));
         }
 
+        // Same relay protocol as the native client: join, hello, offer, answer.
+        function connectViaSignaling() {
+            const room = currentRoom();
+
+            pc.onicecandidate = (event) => {
+                if (!event.candidate && ws && ws.readyState === 1) {
+                    ws.send(JSON.stringify({
+                        room,
+                        type: 'answer',
+                        data: JSON.stringify({ clientId, sdp: pc.localDescription.sdp })
+                    }));
+                }
+            };
+
+            ws = new WebSocket(signalUrl);
+            ws.onopen = () => {
+                ws.send(JSON.stringify({ type: 'join', room }));
+                ws.send(JSON.stringify({
+                    room,
+                    type: 'hello',
+                    data: JSON.stringify({ clientId, name: displayName || 'guest' })
+                }));
+            };
+            ws.onmessage = (ev) => {
+                let msg;
+                try { msg = JSON.parse(ev.data); } catch (err) { return; }
+                let payload;
+                try { payload = JSON.parse(msg.data); } catch (err) { return; }
+                if (msg.type === 'offer') {
+                    if (payload.clientId !== clientId || !payload.sdp) return;
+                    pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: payload.sdp }))
+                        .then(() => pc.createAnswer())
+                        .then(answer => pc.setLocalDescription(answer))
+                        .catch(err => updateStatus('Error: ' + err.message, false));
+                } else if (msg.type === 'error') {
+                    if (payload.clientId && payload.clientId !== clientId) return;
+                    updateStatus('Error: ' + (payload.message || 'rejected'), false);
+                }
+            };
+            ws.onerror = () => {
+                if (!sessionEnded && (!dc || dc.readyState !== 'open')) {
+                    updateStatus('Signaling unreachable', false);
+                }
+            };
+        }
+
+        // Telemetry: poll RTT and connection state every 2000ms.
+        async function pollTelemetry() {
+            if (!pc || sessionEnded) return;
+            const state = pc.connectionState || pc.iceConnectionState || 'unknown';
+            let rtt = null;
+            try {
+                const stats = await pc.getStats();
+                stats.forEach((report) => {
+                    if (report.type === 'candidate-pair' &&
+                        report.state === 'succeeded' &&
+                        report.currentRoundTripTime !== undefined &&
+                        (report.nominated || report.selected || rtt === null)) {
+                        rtt = report.currentRoundTripTime;
+                    }
+                });
+            } catch (err) {
+                return;
+            }
+            telemetry.textContent = rtt !== null
+                ? `rtt ${Math.round(rtt * 1000)} ms · ${state}`
+                : state;
+            telemetry.classList.add('visible');
+        }
+        setInterval(pollTelemetry, 2000);
+
         window.addEventListener('pagehide', () => {
             if (dc && dc.readyState === 'open') {
                 dc.send('\x00AETHER:' + JSON.stringify({ type: 'bye' }));
             }
         });
 
+        // Interactive launcher lifecycle: ping while open, bye on close.
+        if (isInteractive) {
+            setInterval(() => {
+                fetch('/ping' + (sessionEnded ? '?ended=1' : '')).catch(() => {});
+            }, 1000);
+            window.addEventListener('pagehide', () => {
+                try { navigator.sendBeacon('/bye'); } catch (err) {}
+            });
+        }
+
         // Landing gate: a #room fragment goes straight to the terminal.
         const landing = document.getElementById('landing');
         const roomInput = document.getElementById('room-input');
+        const nameInput = document.getElementById('name-input');
+        nameInput.value = displayName;
 
         function currentRoom() {
             return decodeURIComponent(location.hash.replace(/^#/, ''));
@@ -484,12 +616,20 @@
         function submitRoom() {
             const code = roomInput.value.trim();
             if (!code) return;
+            const name = nameInput.value.trim().slice(0, 24);
+            if (name) {
+                displayName = name;
+                try { localStorage.setItem('aether-name', name); } catch (e) {}
+            }
             location.hash = code;
             enterSession();
         }
 
         document.getElementById('room-go').addEventListener('click', submitRoom);
         roomInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submitRoom();
+        });
+        nameInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') submitRoom();
         });
 

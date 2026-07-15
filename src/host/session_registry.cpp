@@ -35,20 +35,9 @@ void SessionRegistry::addClient(const std::string &id, const std::string &name, 
 }
 
 void SessionRegistry::removeClient(const std::string &id) {
-    bool isOwner = false;
-    for (const auto &client : clients) {
-        if (client.id == id && client.permission == Permission::Owner) {
-            isOwner = true;
-            break;
-        }
-    }
     clients.erase(std::remove_if(clients.begin(), clients.end(), [&](const Client &c) { return c.id == id; }), clients.end());
     applyLCDSize();
     broadcastPresence();
-
-    if (isOwner && ownerExitCallback) {
-        ownerExitCallback();
-    }
 }
 
 void SessionRegistry::updateClientSize(const std::string &id, TermSize size) {
@@ -127,10 +116,6 @@ void SessionRegistry::checkInactivity() {
     }
 }
 
-void SessionRegistry::onOwnerDisconnect(std::function<void()> cb) {
-    ownerExitCallback = std::move(cb);
-}
-
 size_t SessionRegistry::clientCount() const {
     return clients.size();
 }
@@ -167,12 +152,7 @@ void SessionRegistry::applyLCDSize() {
 void SessionRegistry::broadcastPresence() {
     json list = json::array();
     for (const auto &client : clients) {
-        std::string permStr = "observer";
-        if (client.permission == Permission::Owner) {
-            permStr = "owner";
-        } else if (client.permission == Permission::Collaborator) {
-            permStr = "collaborator";
-        }
+        std::string permStr = client.permission == Permission::Collaborator ? "collaborator" : "observer";
         list.push_back({{"id", client.id},
                         {"displayName", client.displayName},
                         {"permission", permStr},

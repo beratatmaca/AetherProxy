@@ -47,6 +47,12 @@ public:
     /// Gets underlying data channel.
     std::shared_ptr<rtc::DataChannel> getChannel() const;
 
+    /// Returns round trip time in ms, -1 unknown.
+    long rttMillis();
+
+    /// Returns the connection state name.
+    std::string stateString();
+
     /// Sets ICE failure callback.
     void onDisconnect(std::function<void()> cb);
 

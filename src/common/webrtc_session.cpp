@@ -1,6 +1,7 @@
 #include "common/webrtc_session.hpp"
 #include <iostream>
 #include <future>
+#include <sstream>
 
 WebRTCSession::WebRTCSession() = default;
 
@@ -187,6 +188,23 @@ void WebRTCSession::onOpen(std::function<void()> cb) {
 
 std::shared_ptr<rtc::DataChannel> WebRTCSession::getChannel() const {
     return dc;
+}
+
+long WebRTCSession::rttMillis() {
+    if (!pc) {
+        return -1;
+    }
+    auto rtt = pc->rtt();
+    return rtt ? static_cast<long>(rtt->count()) : -1;
+}
+
+std::string WebRTCSession::stateString() {
+    if (!pc) {
+        return "closed";
+    }
+    std::ostringstream oss;
+    oss << pc->state();
+    return oss.str();
 }
 
 void WebRTCSession::onCandidate(std::function<void(std::string sdp, std::string mid)> cb) {

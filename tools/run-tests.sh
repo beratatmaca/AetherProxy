@@ -100,6 +100,9 @@ run_integration() {
     exit 1
   fi
 
+  # Stale hosts from an aborted run poison the port. Sweep first.
+  pkill -9 -x aetherproxy 2>/dev/null || true
+
   # Ensure Playwright browsers are installed.
   if ! (cd tests && npx playwright --version &>/dev/null); then
     echo "[run-tests] Installing Playwright…"

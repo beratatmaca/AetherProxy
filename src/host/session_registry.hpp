@@ -8,7 +8,7 @@
 #include <rtc/datachannel.hpp>
 
 /// Client permission levels.
-enum class Permission : std::uint8_t { Owner, Collaborator, Observer };
+enum class Permission : std::uint8_t { Collaborator, Observer };
 
 /// Terminal size specifications.
 struct TermSize {
@@ -58,9 +58,6 @@ public:
     /// Checks inactive clients.
     void checkInactivity();
 
-    /// Registers owner exit callback.
-    void onOwnerDisconnect(std::function<void()> cb);
-
     /// Returns connected client count.
     size_t clientCount() const;
 
@@ -76,5 +73,4 @@ private:
     TermSize baseSize{24, 80};
     int pty;
     int maxClients;
-    std::function<void()> ownerExitCallback;
 };

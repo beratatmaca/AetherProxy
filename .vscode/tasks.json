@@ -20,12 +20,6 @@
             "problemMatcher": []
         },
         {
-            "label": "AetherProxy: Collab",
-            "type": "shell",
-            "command": "${workspaceFolder}/build/aetherproxy collab",
-            "problemMatcher": []
-        },
-        {
             "label": "Build",
             "type": "shell",
             "command": "cmake --build build --parallel",

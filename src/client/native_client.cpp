@@ -6,11 +6,24 @@
 #include <sys/eventfd.h>
 #include <csignal>
 #include <cstdlib>
+#include <chrono>
 #include <iostream>
 #include <sstream>
+#include <string_view>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
+
+static void writeAllOut(std::string_view data) {
+    size_t sent = 0;
+    while (sent < data.size()) {
+        ssize_t w = write(STDOUT_FILENO, data.data() + sent, data.size() - sent);
+        if (w <= 0) {
+            return;
+        }
+        sent += static_cast<size_t>(w);
+    }
+}
 
 static int global_winch_fd = -1;
 
@@ -32,6 +45,14 @@ NativeClient::~NativeClient() {
     if (winchFd != -1) {
         close(winchFd);
     }
+}
+
+static std::string localUserName() {
+    const char *user = std::getenv("USER");
+    if (user == nullptr || *user == '\0') {
+        user = std::getenv("LOGNAME");
+    }
+    return (user != nullptr && *user != '\0') ? user : "guest";
 }
 
 void NativeClient::connect(const std::string &signalingUrl, const std::string &roomCode) {
@@ -84,7 +105,7 @@ void NativeClient::connect(const std::string &signalingUrl, const std::string &r
     session->onDisconnect([this]() { eq.push(Event{Event::Type::Disconnect, "", "", "", nullptr}); });
 
     signalClient->onOpen([this, clientId]() {
-        json helloMsg = {{"clientId", clientId}};
+        json helloMsg = {{"clientId", clientId}, {"name", localUserName()}};
         signalClient->send("hello", helloMsg.dump());
     });
 
@@ -94,9 +115,44 @@ void NativeClient::connect(const std::string &signalingUrl, const std::string &r
     (void)old;
 }
 
+void NativeClient::applyLocalWinch() {
+    struct winsize ws {};
+    if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) == -1) {
+        return;
+    }
+    termRows = ws.ws_row;
+    uint16_t remoteRows = ws.ws_row;
+    if (termRows >= 2) {
+        std::ostringstream region;
+        region << "\033[1;" << (termRows - 1) << "r";
+        writeAllOut(region.str());
+        remoteRows = termRows - 1;
+    }
+    json msg = {{"type", "resize"}, {"rows", remoteRows}, {"cols", ws.ws_col}};
+    session->send(std::string("\x00"
+                              "AETHER:",
+                              8) +
+                  msg.dump());
+}
+
+void NativeClient::renderTelemetry() {
+    if (termRows < 2) {
+        return;
+    }
+    std::ostringstream line;
+    line << "\0337\033[" << termRows << ";1H\033[2K\033[2m[AetherProxy] " << session->stateString();
+    long rtt = session->rttMillis();
+    if (rtt >= 0) {
+        line << " · rtt " << rtt << " ms";
+    }
+    line << "\033[22m\0338";
+    writeAllOut(line.str());
+}
+
 void NativeClient::run() {
     enableRawTty();
     running = true;
+    auto lastTelemetry = std::chrono::steady_clock::now();
 
     while (running) {
         fd_set fds;
@@ -110,6 +166,12 @@ void NativeClient::run() {
             0, 100000
         };
         int ret = select(maxFd + 1, &fds, nullptr, nullptr, &tv);
+
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - lastTelemetry).count() >= 2000) {
+            renderTelemetry();
+            lastTelemetry = now;
+        }
 
         if (ret > 0) {
             if (FD_ISSET(STDIN_FILENO, &fds)) {
@@ -126,14 +188,7 @@ void NativeClient::run() {
                 uint64_t val = 0;
                 ssize_t r = read(winchFd, &val, sizeof(val));
                 (void)r;
-                struct winsize ws {};
-                if (ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) != -1) {
-                    json msg = {{"type", "resize"}, {"rows", ws.ws_row}, {"cols", ws.ws_col}};
-                    session->send(std::string("\x00"
-                                              "AETHER:",
-                                              8) +
-                                  msg.dump());
-                }
+                applyLocalWinch();
             }
 
             if (FD_ISSET(eq.getFd(), &fds)) {
@@ -153,18 +208,27 @@ void NativeClient::run() {
                                     std::string("\x00"
                                                 "AETHER:",
                                                 8)) == 0) {
+                        try {
+                            auto payload = json::parse(msg.substr(8));
+                            std::string type = payload.value("type", "");
+                            if (type == "server_exit" || type == "end") {
+                                writeAllOut("\r\n[AetherProxy: Server terminated session]\r\n");
+                                running = false;
+                                break;
+                            }
+                        } catch (...) {
+                        }
                         continue;
                     }
-                    size_t sent = 0;
-                    while (sent < msg.size()) {
-                        ssize_t w = write(STDOUT_FILENO, msg.data() + sent, msg.size() - sent);
-                        if (w <= 0)
-                            break;
-                        sent += static_cast<size_t>(w);
-                    }
+                    writeAllOut(msg);
                 }
             }
         }
+    }
+    if (termRows >= 2) {
+        std::ostringstream reset;
+        reset << "\033[r\033[" << termRows << ";1H\033[2K";
+        writeAllOut(reset.str());
     }
     disableRawTty();
 }
