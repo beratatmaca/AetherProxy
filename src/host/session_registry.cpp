@@ -43,7 +43,9 @@ bool SessionRegistry::addClient(const std::string &id, const std::string &name, 
                   .termSize = {.rows = 24, .cols = 80},
                   .channel = chan,
                   .lastActivity = std::chrono::steady_clock::now(),
-                  .lastLockNotify = {}};
+                  .lastLockNotify = {},
+                  .rateWindowStart = std::chrono::steady_clock::now(),
+                  .bytesInWindow = 0};
     clients.push_back(client);
     applyLCDSize();
     broadcastPresence();
@@ -117,6 +119,13 @@ void SessionRegistry::broadcastControl(const std::string &msg) {
 
 void SessionRegistry::handleInput(const std::string &id, std::string_view data, const std::function<void(std::string_view)> &onPtyWrite) {
     constexpr long kDebounceMs = 500;
+    constexpr size_t kMaxInputFrameSize = 4096;
+    constexpr size_t kMaxBytesPerSecond = 16384;
+
+    if (data.size() > kMaxInputFrameSize) {
+        return;
+    }
+
     auto now = std::chrono::steady_clock::now();
     for (auto &client : clients) {
         if (client.id != id) {
@@ -125,6 +134,17 @@ void SessionRegistry::handleInput(const std::string &id, std::string_view data, 
         if (client.permission != Permission::Collaborator) {
             return;
         }
+
+        auto timeSinceWindow = std::chrono::duration_cast<std::chrono::seconds>(now - client.rateWindowStart).count();
+        if (timeSinceWindow >= 1) {
+            client.rateWindowStart = now;
+            client.bytesInWindow = 0;
+        }
+        client.bytesInWindow += data.size();
+        if (client.bytesInWindow > kMaxBytesPerSecond) {
+            return;
+        }
+
         if (id != writerId && !writerId.empty()) {
             auto held = std::chrono::duration_cast<std::chrono::milliseconds>(now - writerAt).count();
             auto writer = std::ranges::find_if(clients, [this](const Client &c) { return c.id == writerId; });

@@ -33,9 +33,14 @@ jobs:
     outputs:
       docker: ${{ steps.filter.outputs.docker == 'true' || inputs.docker }}
       web: ${{ steps.filter.outputs.web == 'true' || inputs.pages }}
+      repo: ${{ steps.repo.outputs.name }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Lowercase repository name
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - uses: dorny/paths-filter@v3
         id: filter
@@ -96,7 +101,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     container:
-      image: ghcr.io/beratatmaca/aetherproxy/ci:latest
+      image: ghcr.io/${{ needs.changes.outputs.repo }}/ci:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -127,11 +132,11 @@ jobs:
   # ################ Stage 3: build + integration tests ################
   build-test:
     name: Build + integration tests (Release)
-    needs: checks
+    needs: [changes, checks]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     container:
-      image: ghcr.io/beratatmaca/aetherproxy/ci:latest
+      image: ghcr.io/${{ needs.changes.outputs.repo }}/ci:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -168,11 +173,11 @@ jobs:
   # ################ Stage 3: sanitizers ################
   sanitizers:
     name: Sanitizer (ASan)
-    needs: checks
+    needs: [changes, checks]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     container:
-      image: ghcr.io/beratatmaca/aetherproxy/ci:latest
+      image: ghcr.io/${{ needs.changes.outputs.repo }}/ci:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -193,7 +198,7 @@ jobs:
   release-build:
     name: Static build — ${{ matrix.arch }}
     needs: [build-test, sanitizers]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -274,7 +279,7 @@ jobs:
         with:
           draft: true
           name: AetherProxy ${{ steps.version.outputs.version }}
-          tag_name: ${{ github.ref_name }}
+          tag_name: v${{ steps.version.outputs.version }}
           body: |
             ## AetherProxy ${{ steps.version.outputs.version }}
 

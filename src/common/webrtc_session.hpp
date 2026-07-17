@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <vector>
+#include <mutex>
 #include <rtc/peerconnection.hpp>
 #include <rtc/datachannel.hpp>
 
@@ -74,4 +75,5 @@ private:
     std::function<void()> disconnectCallback;
     std::function<void(std::string sdp, std::string mid)> candidateCallback;
     std::function<void()> openCallback;
+    std::mutex callbackMutex;
 };

@@ -28,6 +28,8 @@ struct Client {
     std::shared_ptr<rtc::DataChannel> channel;
     std::chrono::steady_clock::time_point lastActivity;
     std::chrono::steady_clock::time_point lastLockNotify;
+    std::chrono::steady_clock::time_point rateWindowStart;
+    size_t bytesInWindow = 0;
 };
 
 /// Tracks active session peers.

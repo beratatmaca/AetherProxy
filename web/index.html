@@ -2,153 +2,241 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark light">
+    <meta name="theme-color" content="#0a0d10" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f2f1ec" media="(prefers-color-scheme: light)">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>AetherProxy Web Client</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='10' fill='%2335e0b3'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="/xterm.css" />
     <script src="/xterm.js"></script>
     <script src="/xterm-addon-fit.js"></script>
     <style>
         :root {
-            --bg-color: #0b0f19;
-            --panel-bg: rgba(17, 24, 39, 0.7);
-            --border-color: rgba(255, 255, 255, 0.1);
-            --text-color: #f3f4f6;
-            --accent-color: #3b82f6;
-            --accent-hover: #2563eb;
-            --pulse-green: #10b981;
+            --bg: #0a0d10;
+            --panel: rgba(18, 23, 27, 0.82);
+            --line: rgba(255, 255, 255, 0.08);
+            --ink: #d7dee2;
+            --ink-dim: #7c8a91;
+            --signal: #35e0b3;
+            --warn: #f2ae3a;
+            --danger: #ef5a5a;
+            --term-bg: #05070a;
+            --term-selection: rgba(53, 224, 179, 0.25);
+            --ansi-black: #0a0d10; --ansi-red: #ef5a5a; --ansi-green: #35e0b3; --ansi-yellow: #f2ae3a;
+            --ansi-blue: #5aa9e6; --ansi-magenta: #c792ea; --ansi-cyan: #4fd1c5; --ansi-white: #d7dee2;
+            --ansi-bright-black: #4b565c; --ansi-bright-red: #ff7a7a; --ansi-bright-green: #5cf0c9; --ansi-bright-yellow: #ffcf6b;
+            --ansi-bright-blue: #7cc0ff; --ansi-bright-magenta: #dcb3f5; --ansi-bright-cyan: #7de6db; --ansi-bright-white: #f4f7f8;
+            --mono: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+            --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, Roboto, sans-serif;
+            --app-height: 100dvh;
+            --surface: rgba(127, 127, 127, 0.08);
+            --surface-hover: rgba(127, 127, 127, 0.16);
         }
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg: #f2f1ec;
+                --panel: rgba(255, 255, 255, 0.86);
+                --line: rgba(10, 15, 20, 0.10);
+                --ink: #1b2226;
+                --ink-dim: #5c6a70;
+                --signal: #0f8f6c;
+                --warn: #a8660c;
+                --danger: #c23a3a;
+                --term-bg: #f7f6f1;
+                --term-selection: rgba(15, 143, 108, 0.25);
+                --ansi-black: #1b2226; --ansi-red: #c23a3a; --ansi-green: #0f8f6c; --ansi-yellow: #a8660c;
+                --ansi-blue: #1f5fa8; --ansi-magenta: #8a4fae; --ansi-cyan: #0d8a86; --ansi-white: #5c6a70;
+                --ansi-bright-black: #89949a; --ansi-bright-red: #e35b5b; --ansi-bright-green: #149a76; --ansi-bright-yellow: #c47f16;
+                --ansi-bright-blue: #2f74c4; --ansi-bright-magenta: #a566c9; --ansi-bright-cyan: #1aa39e; --ansi-bright-white: #1b2226;
+            }
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body {
             margin: 0;
             padding: 0;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg);
+            color: var(--ink);
+            font-family: var(--sans);
             display: flex;
             flex-direction: column;
             height: 100vh;
+            height: var(--app-height);
             overflow: hidden;
         }
         header {
             display: flex;
+            flex-wrap: wrap;
             justify-content: space-between;
             align-items: center;
-            padding: 1rem 2rem;
-            background: var(--panel-bg);
-            backdrop-filter: blur(12px);
-            border-bottom: 1px solid var(--border-color);
+            gap: 0.6rem;
+            padding: max(0.85rem, env(safe-area-inset-top)) max(1.25rem, env(safe-area-inset-right)) 0.85rem max(1.25rem, env(safe-area-inset-left));
+            background: var(--panel);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border-bottom: 1px solid var(--line);
         }
         .logo {
-            font-weight: 700;
-            font-size: 1.25rem;
-            letter-spacing: -0.025em;
+            font-family: var(--mono);
+            font-weight: 600;
+            font-size: 0.95rem;
+            letter-spacing: 0.04em;
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            white-space: nowrap;
+        }
+        .logo svg { flex-shrink: 0; }
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            flex-wrap: wrap;
         }
         .status {
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            font-size: 0.875rem;
-            background: rgba(255, 255, 255, 0.05);
+            font-family: var(--mono);
+            font-size: 0.78rem;
+            letter-spacing: 0.03em;
+            background: var(--surface);
             padding: 0.35rem 0.75rem;
-            border-radius: 9999px;
-            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            border: 1px solid var(--line);
         }
         .status-dot {
+            position: relative;
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background-color: #ef4444;
+            background: var(--ink-dim);
+            box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+            transition: background 0.2s ease;
         }
         .status-dot.active {
-            background-color: var(--pulse-green);
-            box-shadow: 0 0 8px var(--pulse-green);
-            animation: pulse 2s infinite;
+            background: var(--signal);
+            box-shadow: 0 0 0 3px rgba(53, 224, 179, 0.15), 0 0 8px var(--signal);
+            animation: led-pulse 2.4s ease-in-out infinite;
         }
-        @keyframes pulse {
-            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-            70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-        }
+        .status-dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+        .status-dot.danger { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+        @keyframes led-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
         main {
             flex: 1;
             display: flex;
             position: relative;
-            padding: 1rem;
+            padding: 1rem max(1rem, env(safe-area-inset-right)) 1rem max(1rem, env(safe-area-inset-left));
+            min-height: 0;
         }
         #terminal-container {
             flex: 1;
-            background: rgba(0, 0, 0, 0.5);
+            background: var(--term-bg);
             border-radius: 8px;
-            border: 1px solid var(--border-color);
+            border: 1px solid var(--line);
             padding: 0.5rem;
             overflow: hidden;
         }
+        /* Collapsed: a slim, still-interactive row of small keys (not
+           hidden — desktop mouse users can shrink it, never lose it).
+           Expanded: full-size keys, the default on touch devices. */
         .toolbar {
             display: flex;
             justify-content: center;
-            gap: 0.5rem;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            padding: 0.3rem 0.75rem;
+            background: var(--panel);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border-top: 1px solid var(--line);
+            padding-bottom: max(0.3rem, env(safe-area-inset-bottom));
+            transition: padding 0.2s ease;
+        }
+        .toolbar .btn {
+            padding: 0.28rem 0.6rem;
+            font-size: 0.68rem;
+            transition: padding 0.2s ease, font-size 0.2s ease, background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+        }
+        .toolbar.expanded {
             padding: 0.75rem;
-            background: var(--panel-bg);
-            backdrop-filter: blur(12px);
-            border-top: 1px solid var(--border-color);
+            padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+        }
+        .toolbar.expanded .btn {
+            padding: 0.5rem 1rem;
+            font-size: 0.8rem;
         }
         .btn {
-            background: rgba(255, 255, 255, 0.07);
-            border: 1px solid var(--border-color);
-            color: var(--text-color);
+            background: var(--surface);
+            border: 1px solid var(--line);
+            color: var(--ink);
             padding: 0.5rem 1rem;
             border-radius: 6px;
-            font-size: 0.875rem;
+            font-family: var(--mono);
+            font-size: 0.8rem;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
             user-select: none;
+            touch-action: manipulation;
         }
-        .btn:hover {
-            background: rgba(255, 255, 255, 0.15);
-            border-color: rgba(255, 255, 255, 0.2);
-        }
-        .btn:active {
-            transform: scale(0.95);
-        }
+        .btn:hover { background: var(--surface-hover); border-color: var(--line); }
+        .btn:active { transform: scale(0.95); }
         .btn.modifier-active {
-            background: rgba(59, 130, 246, 0.3);
-            border-color: var(--accent-color);
-            box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+            background: rgba(53, 224, 179, 0.16);
+            border-color: var(--signal);
+            color: var(--signal);
+            box-shadow: 0 0 8px rgba(53, 224, 179, 0.25);
+        }
+        .btn:focus-visible, #room-input:focus-visible, #name-input:focus-visible, #keys-toggle:focus-visible, #btn-share:focus-visible {
+            outline: 2px solid var(--signal);
+            outline-offset: 2px;
+        }
+        #keys-toggle, #btn-share {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--surface);
+            border: 1px solid var(--line);
+            color: var(--ink-dim);
+            width: 1.9rem;
+            height: 1.9rem;
+            border-radius: 6px;
+            padding: 0;
+            cursor: pointer;
+            touch-action: manipulation;
+            transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+        }
+        #keys-toggle[aria-pressed="true"], #btn-share.copied { color: var(--signal); border-color: var(--signal); }
+        #btn-share:hover, #keys-toggle:hover {
+            color: var(--ink);
+            background: var(--surface-hover);
+        }
+        .hidden { display: none !important; }
+        #mode-badge, #lock-badge {
+            display: none;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.3rem 0.7rem;
+            border-radius: 6px;
+            font-family: var(--mono);
+            font-size: 0.72rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
         }
         #mode-badge {
-            display: none;
-            align-items: center;
-            gap: 0.4rem;
-            padding: 0.3rem 0.75rem;
-            border-radius: 9999px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            letter-spacing: 0.04em;
-            background: rgba(239, 68, 68, 0.15);
-            border: 1px solid rgba(239, 68, 68, 0.4);
-            color: #f87171;
-        }
-        #mode-badge.visible {
-            display: flex;
+            background: rgba(239, 90, 90, 0.12);
+            border: 1px solid rgba(239, 90, 90, 0.35);
+            color: var(--danger);
         }
         #lock-badge {
-            display: none;
-            align-items: center;
-            gap: 0.4rem;
-            padding: 0.3rem 0.75rem;
-            border-radius: 9999px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            letter-spacing: 0.04em;
-            background: rgba(245, 158, 11, 0.15);
-            border: 1px solid rgba(245, 158, 11, 0.4);
-            color: #fbbf24;
+            background: rgba(242, 174, 58, 0.12);
+            border: 1px solid rgba(242, 174, 58, 0.35);
+            color: var(--warn);
         }
-        #lock-badge.visible {
-            display: flex;
-        }
+        #mode-badge.visible, #lock-badge.visible { display: flex; }
         #peers-bar {
             display: flex;
             align-items: center;
@@ -160,17 +248,17 @@
             align-items: center;
             gap: 0.35rem;
             padding: 0.2rem 0.6rem;
-            border-radius: 9999px;
-            font-size: 0.75rem;
-            font-weight: 500;
-            background: rgba(255, 255, 255, 0.06);
-            border: 1px solid var(--border-color);
-            color: var(--text-color);
-            transition: border-color 0.3s;
+            border-radius: 6px;
+            font-family: var(--mono);
+            font-size: 0.72rem;
+            background: var(--surface);
+            border: 1px solid var(--line);
+            color: var(--ink);
+            transition: opacity 0.3s ease;
         }
         .peer-pill .peer-dot {
-            width: 7px;
-            height: 7px;
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
             flex-shrink: 0;
         }
@@ -181,22 +269,20 @@
         #telemetry {
             display: none;
             position: absolute;
-            right: 1.75rem;
+            right: max(1.75rem, env(safe-area-inset-right));
             bottom: 1.75rem;
             padding: 0.25rem 0.6rem;
             border-radius: 6px;
-            background: rgba(0, 0, 0, 0.6);
-            border: 1px solid var(--border-color);
-            font-family: monospace;
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--line);
+            font-family: var(--mono);
             font-size: 0.7rem;
-            color: var(--text-color);
-            opacity: 0.45;
+            color: var(--ink);
+            opacity: 0.5;
             pointer-events: none;
             z-index: 5;
         }
-        #telemetry.visible {
-            display: block;
-        }
+        #telemetry.visible { display: block; }
         #landing {
             position: fixed;
             inset: 0;
@@ -204,66 +290,130 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            background: var(--bg-color);
+            padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right)) max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left));
+            background: var(--bg);
+            overflow: hidden;
         }
-        #landing.hidden {
-            display: none;
+        #landing.hidden { display: none; }
+        /* Signal rings behind the card — the one deliberate, static (no
+           motion needed) echo of the logo's radio-wave mark, so the
+           resting screen has an identity before you ever hit Connect. */
+        #landing::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: min(90vh, 720px);
+            height: min(90vh, 720px);
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background: repeating-radial-gradient(circle at center,
+                transparent 0, transparent 42px,
+                var(--line) 43px, var(--line) 44px);
+            -webkit-mask-image: radial-gradient(circle at center, black 55%, transparent 78%);
+            mask-image: radial-gradient(circle at center, black 55%, transparent 78%);
+            pointer-events: none;
         }
         .landing-card {
+            position: relative;
+            z-index: 1;
             display: flex;
             flex-direction: column;
             gap: 1rem;
-            background: var(--panel-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 10px;
             padding: 2rem;
-            width: min(420px, 90vw);
+            width: min(420px, 100%);
             text-align: center;
         }
         .landing-card h1 {
-            font-size: 1.5rem;
+            font-family: var(--mono);
+            font-size: 1.3rem;
+            letter-spacing: 0.03em;
             margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
         }
         .landing-card p {
             margin: 0;
-            color: #9ca3af;
-            font-size: 0.9rem;
+            color: var(--ink-dim);
+            font-size: 0.88rem;
         }
-        #room-input,
-        #name-input {
-            background: rgba(0, 0, 0, 0.4);
-            border: 1px solid var(--border-color);
+        #room-input, #name-input {
+            background: var(--surface);
+            border: 1px solid var(--line);
             border-radius: 6px;
-            color: var(--text-color);
-            padding: 0.6rem 0.8rem;
+            color: var(--ink);
+            padding: 0.65rem 0.8rem;
+            font-family: var(--mono);
             font-size: 1rem;
             text-align: center;
         }
-        #room-input:focus,
-        #name-input:focus {
+        #room-input:focus, #name-input:focus {
             outline: none;
-            border-color: var(--accent-color);
+            border-color: var(--signal);
+        }
+        .landing-card.is-connecting #room-go {
+            background: linear-gradient(90deg, rgba(53, 224, 179, 0.1), rgba(53, 224, 179, 0.35), rgba(53, 224, 179, 0.1));
+            background-size: 200% 100%;
+            border-color: var(--signal);
+            animation: link-sweep 1.4s linear infinite;
+            cursor: default;
+        }
+        @keyframes link-sweep {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        #landing-status {
+            min-height: 1.1em;
+            font-family: var(--mono);
+            font-size: 0.8rem;
+            color: var(--ink-dim);
+        }
+        #landing-status.is-error { color: var(--danger); }
+        @media (prefers-reduced-motion: reduce) {
+            .status-dot.active, .landing-card.is-connecting #room-go {
+                animation: none !important;
+            }
+        }
+        @media (max-width: 640px) {
+            header { padding-left: max(0.9rem, env(safe-area-inset-left)); padding-right: max(0.9rem, env(safe-area-inset-right)); }
+            .logo { font-size: 0.85rem; }
+            .status { font-size: 0.72rem; }
         }
     </style>
 </head>
 <body>
     <header>
         <div class="logo">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 7a5 5 0 0 1 5 5"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
             <span>ÆtherProxy</span>
         </div>
-        <div style="display:flex;align-items:center;gap:0.75rem;">
+        <div class="header-controls">
             <div id="peers-bar"></div>
             <div id="lock-badge">
-                <span>✋</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                 <span id="lock-badge-text"></span>
             </div>
             <div id="mode-badge">
                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                <span id="mode-badge-text">Pipe Mode · Read Only</span>
+                <span id="mode-badge-text" aria-live="polite">Live Stream · Read Only</span>
             </div>
+            <button id="keys-toggle" type="button" aria-label="Toggle on-screen keys" aria-pressed="false" title="On-screen keys">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"/></svg>
+            </button>
+            <button id="btn-share" class="hidden" type="button" aria-label="Copy invitation link" title="Copy invitation link">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+            </button>
             <div class="status" id="status-display">
                 <span class="status-dot" id="status-dot"></span>
-                <span id="status-text">Disconnected</span>
+                <span id="status-text" aria-live="polite">Standby</span>
             </div>
         </div>
     </header>
@@ -274,25 +424,29 @@
     </main>
 
     <div id="landing" class="hidden">
-        <div class="landing-card">
-            <h1>ÆtherProxy</h1>
+        <div class="landing-card" id="landing-card">
+            <h1>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 0 1 10 10"/><path d="M12 7a5 5 0 0 1 5 5"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg>
+                ÆtherProxy
+            </h1>
             <p>Scan the QR code from your terminal to open a session.</p>
             <p>Or enter the room code:</p>
             <input id="name-input" placeholder="Your name" autocomplete="off" spellcheck="false" maxlength="24" />
-            <input id="room-input" placeholder="fox-river-stone-48291" autocomplete="off" spellcheck="false" />
+            <input id="room-input" placeholder="fox-river-stone-48291" autocomplete="off" spellcheck="false" autocapitalize="off" autocorrect="off" />
             <button class="btn" id="room-go">Connect</button>
+            <p id="landing-status" aria-live="polite"></p>
         </div>
     </div>
 
-    <div class="toolbar">
+    <div class="toolbar" id="toolbar">
         <button class="btn" id="btn-ctrl">Ctrl</button>
         <button class="btn" id="btn-alt">Alt</button>
         <button class="btn" id="btn-tab">Tab</button>
         <button class="btn" id="btn-esc">Esc</button>
-        <button class="btn" id="btn-up">▲</button>
-        <button class="btn" id="btn-down">▼</button>
-        <button class="btn" id="btn-left">◀</button>
-        <button class="btn" id="btn-right">▶</button>
+        <button class="btn" id="btn-up" aria-label="Up">▲</button>
+        <button class="btn" id="btn-down" aria-label="Down">▼</button>
+        <button class="btn" id="btn-left" aria-label="Left">◀</button>
+        <button class="btn" id="btn-right" aria-label="Right">▶</button>
     </div>
 
     <script>
@@ -332,18 +486,27 @@
         function refreshBadge() {
             let label = '';
             if (sessionEnded) label = 'Session ended';
-            else if (isPipeMode) label = 'Pipe Mode · Read Only';
-            else if (isPending) label = 'Waiting for approval';
+            else if (isPipeMode) label = 'Live Stream · Read Only';
+            else if (isPending) label = 'Awaiting approval';
             else if (isObserver) label = 'Observer · Read Only';
             if (label) badgeText.textContent = label;
             modeBadge.classList.toggle('visible', label !== '');
             termContainer.classList.toggle('pipe-locked', inputLocked());
         }
 
+        // Status dot state: null | 'connecting' (stays idle-colored) | 'active' | 'warn' | 'danger'.
+        // The signature "linking" motion lives on the landing button alone —
+        // the dot just snaps to solid signal-green once actually connected.
+        function updateStatus(text, kind) {
+            statusText.textContent = text;
+            statusDot.classList.remove('active', 'warn', 'danger');
+            if (kind && kind !== 'connecting') statusDot.classList.add(kind);
+        }
+
         function endSession(label) {
             if (sessionEnded) return;
             sessionEnded = true;
-            updateStatus(label, false);
+            updateStatus(label, 'danger');
             telemetry.classList.remove('visible');
             refreshBadge();
         }
@@ -359,26 +522,84 @@
             setPipeMode(mode === 'pipe');
         }
 
-        function updateStatus(text, active) {
-            statusText.textContent = text;
-            statusDot.classList.toggle('active', active);
+        // ---- Theme: terminal colors follow system light/dark preference ----
+        function cssVar(name) {
+            return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        }
+
+        function buildTerminalTheme() {
+            return {
+                background: cssVar('--term-bg'),
+                foreground: cssVar('--ink'),
+                cursor: cssVar('--signal'),
+                cursorAccent: cssVar('--term-bg'),
+                selectionBackground: cssVar('--term-selection'),
+                black: cssVar('--ansi-black'), red: cssVar('--ansi-red'),
+                green: cssVar('--ansi-green'), yellow: cssVar('--ansi-yellow'),
+                blue: cssVar('--ansi-blue'), magenta: cssVar('--ansi-magenta'),
+                cyan: cssVar('--ansi-cyan'), white: cssVar('--ansi-white'),
+                brightBlack: cssVar('--ansi-bright-black'), brightRed: cssVar('--ansi-bright-red'),
+                brightGreen: cssVar('--ansi-bright-green'), brightYellow: cssVar('--ansi-bright-yellow'),
+                brightBlue: cssVar('--ansi-bright-blue'), brightMagenta: cssVar('--ansi-bright-magenta'),
+                brightCyan: cssVar('--ansi-bright-cyan'), brightWhite: cssVar('--ansi-bright-white')
+            };
         }
 
         const term = new Terminal({
             cursorBlink: true,
-            theme: {
-                background: '#0c101f',
-                foreground: '#f3f4f6'
-            }
+            theme: buildTerminalTheme()
         });
         const fitAddon = new FitAddon.FitAddon();
         term.loadAddon(fitAddon);
         term.open(termContainer);
         fitAddon.fit();
 
-        window.addEventListener('resize', () => {
+        const colorSchemeQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        colorSchemeQuery.addEventListener('change', () => {
+            try { term.options.theme = buildTerminalTheme(); } catch (err) {}
+        });
+
+        // ---- Viewport: dvh + visualViewport keep the layout above the mobile keyboard ----
+        function setViewportHeight() {
+            const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+            document.documentElement.style.setProperty('--app-height', vh + 'px');
+        }
+
+        function handleViewportChange() {
+            setViewportHeight();
             fitAddon.fit();
             sendResizeFrame();
+        }
+
+        setViewportHeight();
+        window.addEventListener('resize', handleViewportChange);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', handleViewportChange);
+            window.visualViewport.addEventListener('scroll', setViewportHeight);
+        }
+
+        // ---- Toolbar: prominent on touch devices, collapsed (toggle-able) on desktop ----
+        const toolbar = document.getElementById('toolbar');
+        const keysToggle = document.getElementById('keys-toggle');
+        // Collapsed keys are still visible and clickable (just smaller),
+        // so defaulting to touch-only expansion never hides anything.
+        let toolbarExpanded = window.matchMedia('(pointer: coarse)').matches;
+        try {
+            const saved = localStorage.getItem('aether-toolbar');
+            if (saved !== null) toolbarExpanded = saved === '1';
+        } catch (e) {}
+
+        function applyToolbarState() {
+            toolbar.classList.toggle('expanded', toolbarExpanded);
+            keysToggle.setAttribute('aria-pressed', String(toolbarExpanded));
+        }
+        applyToolbarState();
+
+        keysToggle.addEventListener('click', () => {
+            toolbarExpanded = !toolbarExpanded;
+            try { localStorage.setItem('aether-toolbar', toolbarExpanded ? '1' : '0'); } catch (e) {}
+            applyToolbarState();
+            requestAnimationFrame(() => { fitAddon.fit(); sendResizeFrame(); });
         });
 
         const clientId = 'client-' + Math.random().toString(36).substring(2, 11);
@@ -467,13 +688,15 @@
         }
 
         function startSession() {
-            updateStatus('Connecting...', true);
+            setLandingState('connecting');
+            updateStatus('Connecting…', 'connecting');
             pc = new RTCPeerConnection(iceConfig());
 
             pc.ondatachannel = (event) => {
             dc = event.channel;
             dc.onopen = () => {
-                updateStatus('Connected', true);
+                updateStatus('Connected', 'active');
+                hideLanding();
                 // Immediately advertise our real terminal dimensions to the host.
                 sendResizeFrame();
             };
@@ -486,7 +709,11 @@
                             term.resize(payload.cols, payload.rows);
                         } else if (payload.type === 'presence') {
                             // Render one pill per peer using host-assigned colors.
+                            // Repeated names (e.g. anonymous "guest" viewers in
+                            // pipe mode) get a running suffix so identity never
+                            // rests on dot color alone.
                             peersBar.innerHTML = '';
+                            const nameSeen = {};
                             (payload.clients || []).forEach((c) => {
                                 const color = c.color || '#888888';
                                 const pill = document.createElement('div');
@@ -500,8 +727,12 @@
                                     dot.style.boxShadow = `0 0 5px ${color}`;
                                 }
                                 pill.appendChild(dot);
-                                const label = (c.displayName || c.id || '') +
-                                    (c.active ? '' : ' (idle)');
+                                const baseName = c.displayName || c.id || '';
+                                nameSeen[baseName] = (nameSeen[baseName] || 0) + 1;
+                                const name = nameSeen[baseName] > 1
+                                    ? `${baseName} · ${nameSeen[baseName]}`
+                                    : baseName;
+                                const label = name + (c.active ? '' : ' (idle)');
                                 pill.appendChild(document.createTextNode(label));
                                 peersBar.appendChild(pill);
                             });
@@ -510,7 +741,7 @@
                             isPending = !!(me && me.permission === 'pending');
                             refreshBadge();
                         } else if (payload.type === 'eof') {
-                            updateStatus('Session ended (EOF)', false);
+                            updateStatus('Session ended (EOF)', 'warn');
                             setPipeMode(true); // lock input on EOF too
                         } else if (payload.type === 'end') {
                             endSession('Session ended');
@@ -563,7 +794,10 @@
                 .then(sdp => pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp })))
                 .then(() => pc.createAnswer())
                 .then(answer => pc.setLocalDescription(answer))
-                .catch(err => updateStatus('Error: ' + err.message, false));
+                .catch(err => {
+                    updateStatus('Error: ' + err.message, 'danger');
+                    setLandingState('error', err.message);
+                });
         }
 
         // Same relay protocol as the native client: join, hello, offer, answer.
@@ -599,15 +833,26 @@
                     pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: payload.sdp }))
                         .then(() => pc.createAnswer())
                         .then(answer => pc.setLocalDescription(answer))
-                        .catch(err => updateStatus('Error: ' + err.message, false));
+                        .catch(err => {
+                            updateStatus('Error: ' + err.message, 'danger');
+                            setLandingState('error', err.message);
+                        });
                 } else if (msg.type === 'error') {
                     if (payload.clientId && payload.clientId !== clientId) return;
-                    updateStatus('Error: ' + (payload.message || 'rejected'), false);
+                    const message = payload.message || 'rejected';
+                    updateStatus('Error: ' + message, 'danger');
+                    setLandingState('error', message);
                 }
             };
             ws.onerror = () => {
                 if (!sessionEnded && (!dc || dc.readyState !== 'open')) {
-                    updateStatus('Signaling unreachable', false);
+                    if (location.hostname === '127.0.0.1' || location.hostname === 'localhost' || location.hostname.startsWith('192.168.') || location.hostname.startsWith('10.')) {
+                        console.warn('Signaling unreachable, falling back to local HTTP signaling');
+                        connectViaLocalHttp();
+                    } else {
+                        updateStatus('Signaling unreachable', 'danger');
+                        setLandingState('error', 'Signaling unreachable');
+                    }
                 }
             };
         }
@@ -655,16 +900,33 @@
 
         // Landing gate: a #room fragment goes straight to the terminal.
         const landing = document.getElementById('landing');
+        const landingCard = document.getElementById('landing-card');
+        const landingStatus = document.getElementById('landing-status');
+        const roomGoBtn = document.getElementById('room-go');
         const roomInput = document.getElementById('room-input');
         const nameInput = document.getElementById('name-input');
         nameInput.value = displayName;
+
+        // Landing state: 'idle' | 'connecting' | 'error'. Stays visible with
+        // a live status until the DataChannel actually opens.
+        function setLandingState(state, message) {
+            landingCard.classList.toggle('is-connecting', state === 'connecting');
+            roomGoBtn.disabled = state === 'connecting';
+            roomGoBtn.textContent = state === 'connecting' ? 'Linking…' : 'Connect';
+            landingStatus.textContent = message || '';
+            landingStatus.classList.toggle('is-error', state === 'error');
+        }
+
+        function hideLanding() {
+            landing.classList.add('hidden');
+            document.getElementById('btn-share').classList.remove('hidden');
+        }
 
         function currentRoom() {
             return decodeURIComponent(location.hash.replace(/^#/, ''));
         }
 
         function enterSession() {
-            landing.classList.add('hidden');
             startSession();
         }
 
@@ -692,7 +954,7 @@
             enterSession();
         } else {
             landing.classList.remove('hidden');
-            updateStatus('Waiting for room', false);
+            updateStatus('Waiting for room code', null);
             roomInput.focus();
         }
 
@@ -705,18 +967,39 @@
         });
 
         // Toolbar: Ctrl/Alt toggle modifier state; others send keys directly
+        const vibrate = (ms) => {
+            if (window.navigator && window.navigator.vibrate) {
+                try { window.navigator.vibrate(ms); } catch (e) {}
+            }
+        };
+
+        const btnShare = document.getElementById('btn-share');
+        btnShare.onclick = () => {
+            navigator.clipboard.writeText(window.location.href).then(() => {
+                btnShare.classList.add('copied');
+                vibrate(40);
+                setTimeout(() => {
+                    btnShare.classList.remove('copied');
+                }, 2000);
+            }).catch(() => {});
+        };
+
+        // Toolbar: Ctrl/Alt toggle modifier state; others send keys directly
         const sendKey = (key) => {
             if (inputLocked()) return;
+            vibrate(30);
             if (dc && dc.readyState === 'open') dc.send(key);
         };
 
         document.getElementById('btn-ctrl').onclick = () => {
             if (inputLocked()) return;
+            vibrate(40);
             ctrlActive = !ctrlActive;
             updateModifierButtons();
         };
         document.getElementById('btn-alt').onclick = () => {
             if (inputLocked()) return;
+            vibrate(40);
             altActive = !altActive;
             updateModifierButtons();
         };

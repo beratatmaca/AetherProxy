@@ -36,26 +36,45 @@ void WebRTCSession::initialize(const std::vector<std::string> &stunServers, cons
     pc = std::make_shared<rtc::PeerConnection>(config);
 
     pc->onIceStateChange([this](rtc::PeerConnection::IceState state) {
-        if (state == rtc::PeerConnection::IceState::Disconnected || state == rtc::PeerConnection::IceState::Failed ||
-            state == rtc::PeerConnection::IceState::Closed) {
-            if (disconnectCallback) {
-                disconnectCallback();
+        if (state == rtc::PeerConnection::IceState::Failed || state == rtc::PeerConnection::IceState::Closed) {
+            std::function<void()> cb;
+            {
+                std::lock_guard<std::mutex> lock(callbackMutex);
+                if (disconnectCallback) {
+                    cb = std::move(disconnectCallback);
+                    disconnectCallback = nullptr;
+                }
+            }
+            if (cb) {
+                cb();
             }
         }
     });
 
     pc->onStateChange([this](rtc::PeerConnection::State state) {
-        if (state == rtc::PeerConnection::State::Disconnected || state == rtc::PeerConnection::State::Failed ||
-            state == rtc::PeerConnection::State::Closed) {
-            if (disconnectCallback) {
-                disconnectCallback();
+        if (state == rtc::PeerConnection::State::Failed || state == rtc::PeerConnection::State::Closed) {
+            std::function<void()> cb;
+            {
+                std::lock_guard<std::mutex> lock(callbackMutex);
+                if (disconnectCallback) {
+                    cb = std::move(disconnectCallback);
+                    disconnectCallback = nullptr;
+                }
+            }
+            if (cb) {
+                cb();
             }
         }
     });
 
     pc->onLocalCandidate([this](const rtc::Candidate &cand) {
-        if (candidateCallback) {
-            candidateCallback(std::string(cand), cand.mid());
+        std::function<void(std::string, std::string)> cb;
+        {
+            std::lock_guard<std::mutex> lock(callbackMutex);
+            cb = candidateCallback;
+        }
+        if (cb) {
+            cb(std::string(cand), cand.mid());
         }
     });
 
@@ -76,27 +95,43 @@ void WebRTCSession::registerDataChannelCallbacks() {
 
     dc->onOpen([this]() {
         std::cout << "DataChannel opened. DTLS active." << "\n" << std::flush;
-        if (openCallback) {
-            openCallback();
+        std::function<void()> cb;
+        {
+            std::lock_guard<std::mutex> lock(callbackMutex);
+            cb = openCallback;
+        }
+        if (cb) {
+            cb();
         }
     });
 
     dc->onClosed([this]() {
-        if (disconnectCallback) {
-            disconnectCallback();
+        std::function<void()> cb;
+        {
+            std::lock_guard<std::mutex> lock(callbackMutex);
+            if (disconnectCallback) {
+                cb = std::move(disconnectCallback);
+                disconnectCallback = nullptr;
+            }
+        }
+        if (cb) {
+            cb();
         }
     });
 
     dc->onMessage([this](rtc::message_variant msg) {
-        if (std::holds_alternative<std::string>(msg)) {
-            if (messageCallback) {
-                messageCallback(std::get<std::string>(msg));
-            }
-        } else if (std::holds_alternative<rtc::binary>(msg)) {
-            auto data = std::get<rtc::binary>(msg);
-            std::string str(reinterpret_cast<const char *>(data.data()), data.size());
-            if (messageCallback) {
-                messageCallback(str);
+        std::function<void(std::string)> cb;
+        {
+            std::lock_guard<std::mutex> lock(callbackMutex);
+            cb = messageCallback;
+        }
+        if (cb) {
+            if (std::holds_alternative<std::string>(msg)) {
+                cb(std::get<std::string>(msg));
+            } else if (std::holds_alternative<rtc::binary>(msg)) {
+                auto data = std::get<rtc::binary>(msg);
+                std::string str(reinterpret_cast<const char *>(data.data()), data.size());
+                cb(str);
             }
         }
     });
@@ -176,14 +211,17 @@ void WebRTCSession::send(const std::string &msg) {
 }
 
 void WebRTCSession::onMessage(std::function<void(std::string)> cb) {
+    std::lock_guard<std::mutex> lock(callbackMutex);
     messageCallback = std::move(cb);
 }
 
 void WebRTCSession::onDisconnect(std::function<void()> cb) {
+    std::lock_guard<std::mutex> lock(callbackMutex);
     disconnectCallback = std::move(cb);
 }
 
 void WebRTCSession::onOpen(std::function<void()> cb) {
+    std::lock_guard<std::mutex> lock(callbackMutex);
     openCallback = std::move(cb);
 }
 
@@ -209,5 +247,6 @@ std::string WebRTCSession::stateString() {
 }
 
 void WebRTCSession::onCandidate(std::function<void(std::string sdp, std::string mid)> cb) {
+    std::lock_guard<std::mutex> lock(callbackMutex);
     candidateCallback = std::move(cb);
 }

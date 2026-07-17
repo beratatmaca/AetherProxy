@@ -38,7 +38,7 @@ std::vector<std::string> qrCodeLines(const std::string &text, bool compact) {
                     line += " ";
                 }
             }
-            lines.push_back(line);
+            lines.push_back("\x1b[97;40m" + line + "\x1b[0m");
         }
     } else {
         for (int y = 0; y < total; ++y) {
@@ -46,7 +46,7 @@ std::vector<std::string> qrCodeLines(const std::string &text, bool compact) {
             for (int x = 0; x < total; ++x) {
                 line += light(x, y) ? "██" : "  ";
             }
-            lines.push_back(line);
+            lines.push_back("\x1b[97;40m" + line + "\x1b[0m");
         }
     }
 

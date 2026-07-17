@@ -38,6 +38,12 @@ set(NO_MEDIA ON CACHE INTERNAL "")
 set(NO_EXAMPLES ON CACHE INTERNAL "")
 set(BUILD_TESTING OFF CACHE INTERNAL "")
 FetchContent_MakeAvailable(datachannel)
+if(TARGET datachannel)
+    set_target_properties(datachannel PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:datachannel,INTERFACE_INCLUDE_DIRECTORIES>")
+endif()
+if(TARGET datachannel-static)
+    set_target_properties(datachannel-static PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "$<TARGET_PROPERTY:datachannel-static,INTERFACE_INCLUDE_DIRECTORIES>")
+endif()
 
 # Fetch libqrencode
 FetchContent_Declare(
@@ -77,6 +83,7 @@ add_executable(aetherproxy
     src/host/session_registry.cpp
     src/host/replay_buffer.cpp
     src/host/session_recorder.cpp
+    src/common/logger.hpp
     src/client/native_client.cpp
     src/common/config.cpp
 )
@@ -85,10 +92,11 @@ file(READ ${CMAKE_CURRENT_SOURCE_DIR}/VERSION AETHER_VERSION)
 string(STRIP "${AETHER_VERSION}" AETHER_VERSION)
 target_compile_definitions(aetherproxy PRIVATE AETHER_VERSION="${AETHER_VERSION}")
 
-target_include_directories(aetherproxy PRIVATE src ${qrencode_SOURCE_DIR})
+target_include_directories(aetherproxy PRIVATE src)
+target_include_directories(aetherproxy SYSTEM PRIVATE ${qrencode_SOURCE_DIR})
 
 # Warnings apply to our target only, not fetched deps.
-target_compile_options(aetherproxy PRIVATE -Wall -Wextra -pedantic)
+target_compile_options(aetherproxy PRIVATE -Wall -Wextra -pedantic -Wshadow -Wconversion -Woverloaded-virtual)
 
 # Link dependencies. libdatachannel ships a separate static target.
 if(STATIC_BUILD)
@@ -103,12 +111,20 @@ if(UTIL_LIB)
     target_link_libraries(aetherproxy PRIVATE util)
 endif()
 
-# Asset embedding custom command
-add_custom_target(embed_assets
+set(AETHER_WEB_ASSETS
+    ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html
+    ${CMAKE_CURRENT_SOURCE_DIR}/web/xterm.js
+    ${CMAKE_CURRENT_SOURCE_DIR}/web/xterm.css
+    ${CMAKE_CURRENT_SOURCE_DIR}/web/xterm-addon-fit.js
+)
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/src/common/embedded_assets.hpp
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed-assets.sh
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    DEPENDS ${AETHER_WEB_ASSETS} ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed-assets.sh
     COMMENT "Compiling web assets into C++ header"
 )
+add_custom_target(embed_assets DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/common/embedded_assets.hpp)
 add_dependencies(aetherproxy embed_assets)
 
 # Debug build: AddressSanitizer

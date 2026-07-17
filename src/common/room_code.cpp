@@ -195,9 +195,9 @@ std::string generateRoomCode() {
         return v % range;
     };
 
-    std::string w1(words[pickUnbiased(words.size())]);
-    std::string w2(words[pickUnbiased(words.size())]);
-    std::string w3(words[pickUnbiased(words.size())]);
+    std::string w1(words[pickUnbiased(static_cast<uint32_t>(words.size()))]);
+    std::string w2(words[pickUnbiased(static_cast<uint32_t>(words.size()))]);
+    std::string w3(words[pickUnbiased(static_cast<uint32_t>(words.size()))]);
     uint32_t num = pickUnbiased(90000U) + 10000U;
 
     return w1 + "-" + w2 + "-" + w3 + "-" + std::to_string(num);

@@ -23,6 +23,7 @@
 #include "common/pty_source.hpp"
 #include "common/stdin_source.hpp"
 #include "common/event_queue.hpp"
+#include "common/logger.hpp"
 #include "common/webrtc_session.hpp"
 #include "common/signaling_client.hpp"
 #include "common/room_code.hpp"
@@ -181,6 +182,61 @@ static std::string localUserName() {
     return (user != nullptr && *user != '\0') ? user : "guest";
 }
 
+static uint16_t g_hostRows = 24;
+static uint16_t g_hostCols = 80;
+
+static void renderHostTelemetry(const std::string &room, SessionRegistry &registry,
+                                std::unordered_map<std::string, std::shared_ptr<WebRTCSession>> &sessions, std::mutex &sessionsMutex) {
+    if (g_hostRows < 2) {
+        return;
+    }
+    size_t count = registry.clientCount();
+    long maxRtt = -1;
+    {
+        std::lock_guard<std::mutex> lock(sessionsMutex);
+        for (const auto &[id, sess] : sessions) {
+            long r = sess->rttMillis();
+            maxRtt = std::max(r, maxRtt);
+        }
+    }
+    std::ostringstream text;
+    text << "[AetherProxy Server] Room: " << room;
+    text << " · " << count << " clients connected";
+    if (maxRtt >= 0) {
+        text << " · max rtt " << maxRtt << " ms";
+    }
+    std::string t = text.str();
+    if (g_hostCols > 1 && t.size() > static_cast<size_t>(g_hostCols) - 1) {
+        size_t cut = static_cast<size_t>(g_hostCols) - 1;
+        while (cut > 0 && (static_cast<unsigned char>(t[cut]) & 0xC0U) == 0x80U) {
+            --cut;
+        }
+        t.resize(cut);
+    }
+    std::ostringstream line;
+    line << "\0337\033[" << g_hostRows << ";1H\033[2K\033[2m" << t << "\033[22m\0338";
+    writeFull(STDOUT_FILENO, line.str().data(), line.str().size());
+}
+
+static void applyHostWinch(SessionRegistry &registry, const std::string &room,
+                           std::unordered_map<std::string, std::shared_ptr<WebRTCSession>> &sessions, std::mutex &sessionsMutex) {
+    struct winsize ws {};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) {
+        return;
+    }
+    g_hostRows = ws.ws_row;
+    g_hostCols = ws.ws_col;
+    uint16_t remoteRows = ws.ws_row;
+    if (g_hostRows >= 2) {
+        std::ostringstream region;
+        region << "\033[1;" << (g_hostRows - 1) << "r";
+        writeFull(STDOUT_FILENO, region.str().data(), region.str().size());
+        remoteRows = g_hostRows - 1;
+    }
+    registry.setBaseSize({.rows = remoteRows, .cols = ws.ws_col});
+    renderHostTelemetry(room, registry, sessions, sessionsMutex);
+}
+
 static int runInteractiveClient(const CLIConfig &config, const std::string &room) {
     HttpServer server;
     if (!server.bindTo(0, true)) {
@@ -273,6 +329,7 @@ int main(int argc, char *argv[]) {
 
     SessionMode mode = detectMode(args);
     CLIConfig config = parseCLIArgs(argc, argv);
+    Logger::init("aetherproxy");
 
     if (mode == SessionMode::Client && isatty(STDIN_FILENO) == 0) {
         std::cerr << "This mode needs a terminal on stdin.\n";
@@ -508,10 +565,7 @@ int main(int argc, char *argv[]) {
     bool localTty = mode != SessionMode::Pipe && isatty(STDIN_FILENO) != 0;
     int winchFd = -1;
     if (localTty) {
-        struct winsize hostWs {};
-        if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &hostWs) == 0) {
-            registry.setBaseSize({.rows = hostWs.ws_row, .cols = hostWs.ws_col});
-        }
+        applyHostWinch(registry, room, sessions, sessionsMutex);
         winchFd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
         host_winch_fd = winchFd;
         ::signal(SIGWINCH, handleHostSigwinch);
@@ -578,6 +632,9 @@ int main(int argc, char *argv[]) {
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - lastInactivityCheck).count() >= 5) {
             registry.checkInactivity();
+            if (localTty) {
+                renderHostTelemetry(room, registry, sessions, sessionsMutex);
+            }
             lastInactivityCheck = now;
         }
 
@@ -617,10 +674,7 @@ int main(int argc, char *argv[]) {
                 uint64_t val = 0;
                 ssize_t r = read(winchFd, &val, sizeof(val));
                 (void)r;
-                struct winsize hostWs {};
-                if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &hostWs) == 0) {
-                    registry.setBaseSize({.rows = hostWs.ws_row, .cols = hostWs.ws_col});
-                }
+                applyHostWinch(registry, room, sessions, sessionsMutex);
             } else if (events[i].data.fd == eq.getFd()) {
                 uint64_t val = 0;
                 eventfd_read(eq.getFd(), &val);
@@ -641,6 +695,9 @@ int main(int argc, char *argv[]) {
                             name = evItem.clientId;
                         }
                         bool added = registry.addClient(evItem.clientId, name, perm, evItem.channel);
+                        if (added) {
+                            Logger::info("Client joined: id=" + evItem.clientId + " name=" + name);
+                        }
                         std::string modeStr = mode == SessionMode::Pipe ? "pipe" : "terminal";
                         std::string modeFrame = std::string(
                                                     "\x00"
@@ -665,6 +722,7 @@ int main(int argc, char *argv[]) {
                             promptAdmit();
                         }
                     } else if (evItem.type == Event::Type::Disconnect) {
+                        Logger::info("Client disconnected: id=" + evItem.clientId);
                         dropPending(evItem.clientId);
                         registry.removeClient(evItem.clientId);
                         std::lock_guard<std::mutex> lock(sessionsMutex);
@@ -694,6 +752,9 @@ int main(int argc, char *argv[]) {
                             registry.handleInput(evItem.clientId, msg, [&io](std::string_view d) { io->write(d.data(), d.size()); });
                         }
                     }
+                }
+                if (localTty) {
+                    renderHostTelemetry(room, registry, sessions, sessionsMutex);
                 }
             } else if (events[i].data.fd == io->getFd()) {
                 char buf[1024];
@@ -730,6 +791,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (localTty) {
+        writeFull(STDOUT_FILENO, "\x1b[r", 3);
         disableRawTty();
         if (winchFd != -1) {
             close(winchFd);

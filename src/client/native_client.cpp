@@ -137,6 +137,11 @@ NativeClient::NativeClient() : signalClient(std::make_shared<SignalingClient>())
 }
 
 NativeClient::~NativeClient() {
+    if (session) {
+        session->onDisconnect(nullptr);
+        session->onMessage(nullptr);
+        session->onOpen(nullptr);
+    }
     disableRawTty();
     if (winchFd != -1) {
         close(winchFd);
